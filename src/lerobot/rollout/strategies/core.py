@@ -21,12 +21,14 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
+from lerobot.common.grasp_object_detection import format_best_detection_log
 from lerobot.datasets.utils import DEFAULT_VIDEO_FILE_SIZE_IN_MB
 from lerobot.utils.action_interpolator import ActionInterpolator
 from lerobot.utils.constants import OBS_STR
 from lerobot.utils.cycle_timer import CycleTimer
 from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.utils import log_say
 from lerobot.utils.visualization_utils import log_visualization_data
 
 from ..inference import InferenceEngine
@@ -105,7 +107,7 @@ class RolloutStrategy(abc.ABC):
             self._interpolator.reset()
         self._cached_obs_processed = None
 
-    def _process_observation_and_notify(self, processors: ProcessorContext, obs_raw: dict) -> dict:
+    def _process_observation_and_notify(self, ctx: RolloutContext, obs_raw: dict) -> dict:
         """Run the observation processor and notify the engine — throttled to policy ticks.
 
         Callers are responsible for calling ``robot.get_observation()`` every loop
@@ -123,10 +125,29 @@ class RolloutStrategy(abc.ABC):
         because reset makes ``needs_new_action()`` return True on the next call.
         """
         if self._cached_obs_processed is None or self._interpolator.needs_new_action():
-            obs_processed = processors.robot_observation_processor(obs_raw)
+            obs_processed = ctx.processors.robot_observation_processor(obs_raw)
+            if ctx.grasp_target is not None:
+                obs_processed = ctx.grasp_target.inject(obs_processed)
             self._engine.notify_observation(obs_processed)
             self._cached_obs_processed = obs_processed
         return self._cached_obs_processed
+
+    def _refresh_grasp_target(self, ctx: RolloutContext) -> None:
+        """Run YOLO once and cache the highest-confidence grasp target for this episode/run."""
+        if ctx.grasp_target is None:
+            return
+        obs = ctx.hardware.robot_wrapper.get_observation()
+        best = ctx.grasp_target.refresh(obs)
+        summary = format_best_detection_log(best, ctx.grasp_target.detector.last_camera_key)
+        logger.info("Pre-rollout grasp detection:\n%s", summary)
+        log_say(
+            f"Recommended grasp target confidence {best.confidence:.2f}"
+            if best is not None
+            else "No grasp target detected",
+            ctx.runtime.cfg.play_sounds,
+        )
+        # Force the next observation tick to rebuild with the new target values.
+        self._cached_obs_processed = None
 
     def _handle_warmup(self, use_torch_compile: bool, timer: CycleTimer) -> bool:
         """Handle torch.compile warmup phase.

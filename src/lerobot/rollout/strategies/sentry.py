@@ -116,6 +116,7 @@ class SentryStrategy(RolloutStrategy):
 
         start_time = time.perf_counter()
         episode_start = time.perf_counter()
+        self._refresh_grasp_target(ctx)
         logger.info("Sentry recording started (episode_duration=%.0fs)", episode_duration_s)
 
         try:
@@ -129,7 +130,7 @@ class SentryStrategy(RolloutStrategy):
                 with timer.section("observe"):
                     obs = robot.get_observation()
                 with timer.section("process_obs"):
-                    obs_processed = self._process_observation_and_notify(ctx.processors, obs)
+                    obs_processed = self._process_observation_and_notify(ctx, obs)
 
                 if self._handle_warmup(cfg.use_torch_compile, timer):
                     continue

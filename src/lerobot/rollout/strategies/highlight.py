@@ -106,6 +106,7 @@ class HighlightStrategy(RolloutStrategy):
 
         start_time = time.perf_counter()
         task_str = cfg.dataset.single_task if cfg.dataset else cfg.task
+        self._refresh_grasp_target(ctx)
         logger.info("Highlight strategy recording started (press '%s' to save)", self.config.save_key)
 
         with VideoEncodingManager(dataset):
@@ -120,7 +121,7 @@ class HighlightStrategy(RolloutStrategy):
                     with timer.section("observe"):
                         obs = robot.get_observation()
                     with timer.section("process_obs"):
-                        obs_processed = self._process_observation_and_notify(ctx.processors, obs)
+                        obs_processed = self._process_observation_and_notify(ctx, obs)
 
                     if self._handle_warmup(cfg.use_torch_compile, timer):
                         continue

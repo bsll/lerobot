@@ -130,6 +130,7 @@ class EpisodicStrategy(RolloutStrategy):
                     timer.restart()
                     self._engine.resume()
 
+                    self._refresh_grasp_target(ctx)
                     log_say(f"Recording episode {dataset.num_episodes}", play_sounds)
                     self._policy_loop(
                         ctx=ctx,
@@ -249,7 +250,7 @@ class EpisodicStrategy(RolloutStrategy):
             with timer.section("observe"):
                 obs = robot.get_observation()
             with timer.section("process_obs"):
-                obs_processed = self._process_observation_and_notify(ctx.processors, obs)
+                obs_processed = self._process_observation_and_notify(ctx, obs)
 
             if self._handle_warmup(ctx.runtime.cfg.use_torch_compile, timer):
                 continue
