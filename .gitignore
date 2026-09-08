@@ -164,6 +164,7 @@ wandb/
 
 # Data folders
 data/
+train_data/
 outputs/
 
 # Translations

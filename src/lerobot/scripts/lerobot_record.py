@@ -118,15 +118,16 @@ from lerobot.processor import (
 from lerobot.robots import (  # noqa: F401
     Robot,
     RobotConfig,
+    make_robot_from_config,
     bi_openarm_follower,
     bi_rebot_b601_follower,
     bi_so_follower,
     earthrover_mini_plus,
     hope_jr,
     koch_follower,
-    make_robot_from_config,
     omx_follower,
     openarm_follower,
+    piper_follower,
     reachy2,
     rebot_b601_follower,
     so_follower,
@@ -135,16 +136,17 @@ from lerobot.robots import (  # noqa: F401
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
     TeleoperatorConfig,
+    make_teleoperator_from_config,
     bi_openarm_leader,
     bi_openarm_mini,
     bi_rebot_102_leader,
     bi_so_leader,
     homunculus,
     koch_leader,
-    make_teleoperator_from_config,
     omx_leader,
     openarm_leader,
     openarm_mini,
+    piper_leader,
     reachy2_teleoperator,
     rebot_102_leader,
     so_leader,
@@ -167,12 +169,32 @@ from lerobot.utils.visualization_utils import (
 )
 
 
+def make_action_from_observation(obs: RobotObservation, robot: Robot) -> RobotAction:
+    """Build an action label from the follower observation.
+
+    Used for hardware leader-follower setups where the PC must not command the arm:
+    the follower is already moving, so its current joint state is stored as the action.
+    """
+    action_keys = list(robot.action_features.keys())
+    if all(key in obs for key in action_keys):
+        return {key: obs[key] for key in action_keys}
+
+    raise KeyError(
+        "Cannot build action from follower observation.\n"
+        f"Missing keys: {[key for key in action_keys if key not in obs]}\n"
+        f"Action keys: {action_keys}\n"
+        f"Observation keys: {list(obs.keys())}"
+    )
+
+
 @dataclass
 class RecordConfig:
     robot: RobotConfig
     dataset: DatasetRecordConfig
-    # Teleoperator to control the robot (required)
+    # Teleoperator to control the robot (required unless direct_record=True)
     teleop: TeleoperatorConfig | None = None
+    # Hardware leader-follower on one CAN: record follower state as action, do not send commands.
+    direct_record: bool = False
     # Display all cameras on screen
     display_data: bool = False
     # Visualization backend used when display_data is True: "rerun" or "foxglove".
@@ -190,10 +212,16 @@ class RecordConfig:
     resume: bool = False
 
     def __post_init__(self):
-        if self.teleop is None:
+        if self.direct_record and self.teleop is not None:
+            raise ValueError(
+                "direct_record=True does not use a teleoperator. "
+                "Omit --teleop.* and only pass the follower --robot.* (e.g. piper on can0)."
+            )
+        if self.teleop is None and not self.direct_record:
             raise ValueError(
                 "A teleoperator is required for recording. "
-                "Use --teleop.type=... to specify one. "
+                "Use --teleop.type=... to specify one, "
+                "or set --direct_record=true for hardware leader-follower on a single CAN. "
                 "For policy-based deployment, use lerobot-rollout instead."
             )
 
@@ -246,6 +274,7 @@ def record_loop(
     display_mode: str = "rerun",
     display_compressed_images: bool = False,
     timer: CycleTimer | None = None,
+    direct_record: bool = False,
 ):
     """Drive the robot from the teleoperator at *fps*, optionally recording each frame.
 
@@ -255,6 +284,9 @@ def record_loop(
     statistics span the whole session and are reported per episode.  Without it each
     call gets a private timer: identical pacing and identical slow-loop warnings, just
     no end-of-run summary, since a single phase has no run to summarise.
+
+    When *direct_record* is True, actions are taken from the follower observation and
+    are not sent to the robot (hardware leader-follower already moves the arm).
     """
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -311,8 +343,13 @@ def record_loop(
                 observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
         with timer.section("teleop"):
-            # Get action from teleop
-            if isinstance(teleop, Teleoperator):
+            action_values = None
+            robot_action_to_send = None
+
+            if direct_record:
+                # Hardware leader-follower: label action with follower state, do not command.
+                action_values = make_action_from_observation(obs_processed, robot)
+            elif isinstance(teleop, Teleoperator):
                 act = teleop.get_action()
                 if robot.name == "unitree_g1":
                     teleop.send_feedback(obs)
@@ -332,7 +369,6 @@ def record_loop(
                 action_values = act_processed_teleop
                 robot_action_to_send = robot_action_processor((act_processed_teleop, obs))
             else:
-                robot_action_to_send = None
                 no_action_count += 1
                 if no_action_count == 1 or no_action_count % 10 == 0:
                     logging.warning(
@@ -344,17 +380,18 @@ def record_loop(
         # Nothing to send and nothing to record, but the phase still has to be paced and
         # still has to end: `continue`ing straight past the tail of the loop body used to
         # spin at full CPU speed on a `control_time_s` that never advanced.
-        if robot_action_to_send is None:
+        if action_values is None:
             timer.wait()
             timestamp = time.perf_counter() - start_episode_t
             continue
 
-        with timer.section("send"):
-            # Send action to robot
-            # Action can eventually be clipped using `max_relative_target`,
-            # so action actually sent is saved in the dataset. action = postprocessor.process(action)
-            # TODO(steven, pepijn, adil): we should use a pipeline step to clip the action, so the sent action is the action that we input to the robot.
-            _sent_action = robot.send_action(robot_action_to_send)
+        if robot_action_to_send is not None:
+            with timer.section("send"):
+                # Send action to robot
+                # Action can eventually be clipped using `max_relative_target`,
+                # so action actually sent is saved in the dataset. action = postprocessor.process(action)
+                # TODO(steven, pepijn, adil): we should use a pipeline step to clip the action, so the sent action is the action that we input to the robot.
+                _sent_action = robot.send_action(robot_action_to_send)
 
         # Write to dataset
         if dataset is not None:
@@ -397,7 +434,21 @@ def record(
     )
 
     robot = make_robot_from_config(cfg.robot)
-    teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
+    teleop = None if cfg.direct_record else (
+        make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
+    )
+
+    if cfg.direct_record:
+        logging.info(
+            "direct_record=True: recording follower observation as action; "
+            "not sending commands (hardware leader-follower)."
+        )
+        if hasattr(robot, "bus") and hasattr(robot.bus, "clear_gripper"):
+            # Avoid disturbing wired leader-follower gripper state on calibrate hooks.
+            def _skip_clear_gripper() -> None:
+                logging.debug("direct_record: skipped clear_gripper()")
+
+            robot.bus.clear_gripper = _skip_clear_gripper
 
     # Fall back to identity pipelines when the caller doesn't supply processors.
     if (
@@ -481,7 +532,8 @@ def record(
         # tripping a firmware watchdog) during teleop init. Matches lerobot_teleoperate.py.
         if teleop is not None:
             teleop.connect()
-        robot.connect()
+        # Skip parking/calibrate in direct_record so we don't fight the hardware leader.
+        robot.connect(calibrate=not cfg.direct_record)
 
         listener, events = init_keyboard_listener()
 
@@ -510,6 +562,7 @@ def record(
                     display_mode=cfg.display_mode,
                     display_compressed_images=display_compressed_images,
                     timer=timer,
+                    direct_record=cfg.direct_record,
                 )
 
                 # Execute a few seconds without recording to give time to manually reset the environment
@@ -531,6 +584,7 @@ def record(
                         single_task=cfg.dataset.single_task,
                         display_data=cfg.display_data,
                         display_mode=cfg.display_mode,
+                        direct_record=cfg.direct_record,
                     )
 
                 if events["rerecord_episode"]:

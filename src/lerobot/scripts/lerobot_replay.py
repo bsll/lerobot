@@ -54,6 +54,7 @@ from lerobot.processor import (
 from lerobot.robots import (  # noqa: F401
     Robot,
     RobotConfig,
+    make_robot_from_config,
     bi_openarm_follower,
     bi_rebot_b601_follower,
     bi_so_follower,
@@ -61,9 +62,9 @@ from lerobot.robots import (  # noqa: F401
     hope_jr,
     koch_follower,
     lekiwi,
-    make_robot_from_config,
     omx_follower,
     openarm_follower,
+    piper_follower,
     reachy2,
     rebot_b601_follower,
     so_follower,
