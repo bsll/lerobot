@@ -27,9 +27,9 @@ fi
 ##############################
 # 基础 / 输出
 ##############################
-DATASET_REPO_ID="${DATASET_REPO_ID:-bsll/pnp_xiebang_grasp_state}"
+DATASET_REPO_ID="${DATASET_REPO_ID:-pnp_xiebang_grasp_state}"
 # 本地数据集目录（含 meta/info.json）；空则去 $HF_LEROBOT_HOME/<repo_id> 或 Hub 下载
-DATASET_ROOT="${DATASET_ROOT:-$HOME/.cache/huggingface/lerobot/${DATASET_REPO_ID}}"
+DATASET_ROOT="${DATASET_ROOT:-${ROOT}/train_data/${DATASET_REPO_ID}}"
 DATASET_REVISION="${DATASET_REVISION:-}"              # 数据集 revision，空则默认
 DATASET_EPISODES="${DATASET_EPISODES:-}"              # 例如 "[0,1,2]"，空则用全部 episode
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/smolvla/pnp_xiebang_grasp_state}"
@@ -57,7 +57,7 @@ POLICY_LICENSE="${POLICY_LICENSE:-}"
 ##############################
 # 训练超参（TrainPipelineConfig 默认）
 ##############################
-BATCH_SIZE="${BATCH_SIZE:-32}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
 STEPS="${STEPS:-100000}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 LOG_FREQ="${LOG_FREQ:-200}"
@@ -159,10 +159,10 @@ EVAL_USE_ASYNC_ENVS="${EVAL_USE_ASYNC_ENVS:-false}"
 # WandB / SwanLab（WandBConfig；enable=true 时走 SwanLab）
 ##############################
 # 默认关闭：未登录 / 无 entity 权限时 wandb.init 会直接 permission denied
-WANDB_ENABLE="${WANDB_ENABLE:-false}"
+WANDB_ENABLE="${WANDB_ENABLE:-true}"
 WANDB_DISABLE_ARTIFACT="${WANDB_DISABLE_ARTIFACT:-true}"
 WANDB_PROJECT="${WANDB_PROJECT:-lerobot}"
-WANDB_ENTITY="${WANDB_ENTITY:-}"                      # 有权限时再填，例如你的 wandb team/user
+WANDB_ENTITY="${WANDB_ENTITY:-beishouluoluo-bupti}"                      # 有权限时再填，例如你的 wandb team/user
 WANDB_NOTES="${WANDB_NOTES:-}"
 WANDB_RUN_ID="${WANDB_RUN_ID:-}"
 WANDB_MODE="${WANDB_MODE:-}"                          # online | offline | disabled | local
