@@ -49,6 +49,28 @@ export DATASET_NAME=piper_demo
 bash examples/piper/4_train.sh
 ```
 
+### 4. 推理（策略控制从臂）
+
+训练结束后用 [`5_rollout.sh`](./5_rollout.sh) 在真机上跑策略。
+
+**重要**：录制时是硬件主从、PC 只监听；推理时 PC 会向从臂发关节指令。请先关掉硬件主从 / 只让从臂受 PC 控制，并清空工作区。
+
+```bash
+# 默认用最后一个常见 checkpoint；也可显式指定
+export CHECKPOINT_STEP=030000
+# 或：export POLICY_PATH=/abs/path/to/.../pretrained_model
+export TASK="Pick up the pen and put it in the bowl."
+export DURATION_S=60
+bash examples/piper/5_rollout.sh
+```
+
+只想回放录好的某一集（不开策略）可用：
+
+```bash
+export EPISODE=0
+bash examples/piper/5b_replay.sh
+```
+
 ---
 
 ## B. 双 CAN 软件主从
@@ -83,27 +105,23 @@ bash examples/piper/3_record.sh
 
 ---
 
-## 评估 / 回放（可选）
+## 评估 / 回放
 
-策略部署请用 `lerobot-rollout`。回放某一 episode：
+- 策略推理：[`5_rollout.sh`](./5_rollout.sh)（`lerobot-rollout --strategy.type=base`）
+- 开环回放数据集：[`5b_replay.sh`](./5b_replay.sh)
 
 ```bash
-lerobot-replay \
-  --robot.type=piper_follower \
-  --robot.port=can0 \
-  --robot.id=follower \
-  --dataset.repo_id=${HF_USER}/piper_demo \
-  --dataset.episode=0
+export CHECKPOINT_STEP=030000
+bash examples/piper/5_rollout.sh
 ```
-
-（双 CAN 时把 `--robot.port` 改成 `can_follower`。）
 
 ## 注意
 
-- 单 CAN：确认硬件主从已配好，PC 只监听、不抢控
+- 单 CAN 录制：确认硬件主从已配好，PC 只监听、不抢控
+- 单 CAN 推理：必须改为 PC 控从臂；不要和硬件主从模式同时抢控
 - 双 CAN：上电前确认口名；不要和硬件主从模式混用
 - 当前示例相机：`front=/dev/video4`，`wrist=/dev/video10`；换机时改脚本里的路径
-- 长时间录制前确认 `dataset.repo_id`
+- 数据默认本地：`train_data/<DATASET_NAME>/`；模型：`outputs/models/<JOB_NAME>/`
 
 ## 代码位置
 
@@ -113,3 +131,5 @@ lerobot-replay \
 | `src/lerobot/robots/piper_follower/` | 从臂 Robot |
 | `src/lerobot/teleoperators/piper_leader/` | 主臂 Teleoperator（双 CAN） |
 | `--direct_record` | 单 CAN 直录开关（`lerobot-record`） |
+| `5_rollout.sh` | 真机策略推理 |
+| `5b_replay.sh` | 数据集开环回放 |
