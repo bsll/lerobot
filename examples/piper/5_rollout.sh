@@ -56,8 +56,8 @@ lerobot-rollout --strategy.type=base --policy.path="${POLICY_PATH}"  --robot.typ
   --robot.id=follower \
   --robot.disable_torque_on_disconnect=false \
   --robot.cameras="{
-    front: {type: opencv, index_or_path: /dev/video4, width: 640, height: 480, fps: 30},
-    wrist: {type: opencv, index_or_path: /dev/video10, width: 640, height: 480, fps: 30}
+    front: {type: opencv, index_or_path: /dev/video4, width: 640, height: 480, fps: 30, backend: V4L2},
+    wrist: {type: opencv, index_or_path: /dev/video10, width: 640, height: 480, fps: 30, backend: V4L2}
   }" \
   --fps=30 \
   --duration="${DURATION_S}" \

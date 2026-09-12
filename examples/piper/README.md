@@ -146,6 +146,7 @@ bash examples/piper/5_rollout.sh
 - 单 CAN 推理：必须改为 PC 控从臂；不要和硬件主从模式同时抢控
 - 双 CAN：上电前确认口名；不要和硬件主从模式混用
 - 当前示例相机：`front=/dev/video4`，`wrist=/dev/video10`；换机时改脚本里的路径
+- Linux 上相机请用 `backend: V4L2`（默认 `ANY` 常走 FFMPEG，会导致设不上 640×480）
 - 带抓取姿态采集：需 `ultralytics` + OBB `best.pt`；ROI 用 `DETECT_*_RATIO` 按 Piper 画面重调
 - 数据默认本地：`train_data/<DATASET_NAME>/`；模型：`outputs/models/<JOB_NAME>/`
 
