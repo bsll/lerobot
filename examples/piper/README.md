@@ -14,7 +14,7 @@ uv sync --extra piper
 |---|---|---|
 | 接线 | 主从已在上位机配好，两臂共一路 CAN（如 `can0`） | 主臂 / 从臂各一路 CAN |
 | 遥操谁做 | 硬件完成，不必跑 `2_teleop.sh` | PC 读主臂再写从臂 |
-| 录数据 | [`3b_record_singleport.sh`](./3b_record_singleport.sh) | [`3_record.sh`](./3_record.sh) |
+| 录数据 | [`3b_record_singleport.sh`](./3b_record_singleport.sh) / 带抓取目标 [`3c_record_singleport_grasp.sh`](./3c_record_singleport_grasp.sh) | [`3_record.sh`](./3_record.sh) |
 | action 来源 | 从臂当前关节状态 | 主臂指令 |
 
 ---
@@ -41,6 +41,22 @@ bash examples/piper/3b_record_singleport.sh
 
 要点：`--direct_record=true`，不传 `--teleop.*`，且**不会**向机械臂发控制指令。  
 数据默认写到仓库内 `train_data/<DATASET_NAME>/`，**不上传** Hugging Face Hub（可用 `DATASET_ROOT=...` 改路径）。
+
+### 2b. 录数据集（附加抓取目标姿态）
+
+每集开始前对 `front`（可改）跑一次 YOLO OBB，把归一化 `(cx,cy,w,h,angle)` 追加到 `observation.state`（多 5 维）。同一 episode 内这 5 维恒定；`action` 仍只有 Piper 关节维。直播画面可有 “GRASP THIS” 叠加，落盘视频不含叠加。
+
+```bash
+# 需要 OBB 权重；缺文件会直接报错退出
+export MODEL_PATH=/path/to/best.pt   # 默认 $REPO_ROOT/best.pt
+export DATASET_NAME=piper_grasp_demo
+# 可选：按 Piper 画面调 ROI（默认全图）
+# export DETECT_MIN_CX_RATIO=0.2 DETECT_MAX_CX_RATIO=0.9 ...
+uv pip install ultralytics
+bash examples/piper/3c_record_singleport_grasp.sh
+```
+
+训练时 state 维数已含这 5 维；**推理也必须开同一套** `--object_detection.*`（见 [`5c_rollout_grasp.sh`](./5c_rollout_grasp.sh)）。
 
 ### 3. 训练
 
@@ -69,6 +85,14 @@ bash examples/piper/5_rollout.sh
 ```bash
 export EPISODE=0
 bash examples/piper/5b_replay.sh
+```
+
+若数据集是用 `3c` 采的（state 含 grasp 5 维），推理请用：
+
+```bash
+export MODEL_PATH=/path/to/best.pt
+export POLICY_PATH=.../pretrained_model
+bash examples/piper/5c_rollout_grasp.sh
 ```
 
 ---
@@ -108,6 +132,7 @@ bash examples/piper/3_record.sh
 ## 评估 / 回放
 
 - 策略推理：[`5_rollout.sh`](./5_rollout.sh)（`lerobot-rollout --strategy.type=base`）
+- 带抓取目标 state 的推理：[`5c_rollout_grasp.sh`](./5c_rollout_grasp.sh)
 - 开环回放数据集：[`5b_replay.sh`](./5b_replay.sh)
 
 ```bash
@@ -121,6 +146,7 @@ bash examples/piper/5_rollout.sh
 - 单 CAN 推理：必须改为 PC 控从臂；不要和硬件主从模式同时抢控
 - 双 CAN：上电前确认口名；不要和硬件主从模式混用
 - 当前示例相机：`front=/dev/video4`，`wrist=/dev/video10`；换机时改脚本里的路径
+- 带抓取姿态采集：需 `ultralytics` + OBB `best.pt`；ROI 用 `DETECT_*_RATIO` 按 Piper 画面重调
 - 数据默认本地：`train_data/<DATASET_NAME>/`；模型：`outputs/models/<JOB_NAME>/`
 
 ## 代码位置
@@ -131,5 +157,7 @@ bash examples/piper/5_rollout.sh
 | `src/lerobot/robots/piper_follower/` | 从臂 Robot |
 | `src/lerobot/teleoperators/piper_leader/` | 主臂 Teleoperator（双 CAN） |
 | `--direct_record` | 单 CAN 直录开关（`lerobot-record`） |
+| `3c_record_singleport_grasp.sh` | 直录 + YOLO 抓取目标写入 state |
 | `5_rollout.sh` | 真机策略推理 |
+| `5c_rollout_grasp.sh` | 推理时同步注入 grasp state |
 | `5b_replay.sh` | 数据集开环回放 |

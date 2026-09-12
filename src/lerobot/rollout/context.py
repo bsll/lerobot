@@ -31,6 +31,11 @@ from typing import TYPE_CHECKING
 import torch
 
 from lerobot.configs import FeatureType, PreTrainedConfig
+from lerobot.common.grasp_object_detection import (
+    GraspTargetTracker,
+    extend_hw_observation_features,
+    make_grasp_target_tracker,
+)
 from lerobot.datasets import (
     LeRobotDataset,
     aggregate_pipeline_dataset_features,
@@ -261,6 +266,8 @@ class RolloutContext:
     policy: PolicyContext
     processors: ProcessorContext
     data: DatasetContext
+    # Optional YOLO tracker: refresh before each episode/run, inject into obs.state.
+    grasp_target: GraspTargetTracker | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +430,15 @@ def build_rollout_context(
         for k, v in all_obs_features.items()
         if isinstance(v, tuple) or (v is float and k.endswith((".pos", ".vel")))
     }
+    grasp_tracker = make_grasp_target_tracker(cfg.object_detection)
+    if grasp_tracker is not None:
+        observation_features_hw = extend_hw_observation_features(observation_features_hw)
+        logger.info(
+            "Grasp-object detection enabled for rollout "
+            "(model=%s, camera_key=%r). Highest-confidence target appended to observation.state.",
+            cfg.object_detection.model_path,
+            cfg.object_detection.camera_key,
+        )
     policy_action_names = getattr(policy_config, "action_feature_names", None)
     observation_features_hw = _align_state_feature_order(
         observation_features_hw,
@@ -608,4 +624,5 @@ def build_rollout_context(
             hw_features=hw_features,
             ordered_action_keys=ordered_action_keys,
         ),
+        grasp_target=grasp_tracker,
     )

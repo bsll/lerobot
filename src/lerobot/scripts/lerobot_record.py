@@ -38,6 +38,18 @@ lerobot-record \\
     --display_data=true
 ```
 
+To recommend a grasp target with YOLO OBB before each episode and store it in
+``observation.state`` (highest-confidence detection: cx, cy, w, h, angle):
+
+```shell
+lerobot-record \\
+    ... \\
+    --object_detection.enabled=true \\
+    --object_detection.model_path=best.pt \\
+    --object_detection.camera_key=front \\
+    --object_detection.conf=0.25
+```
+
 To stream the data to Foxglove instead of Rerun, add ``--display_mode=foxglove`` (then connect the
 Foxglove app to ``ws://127.0.0.1:8765``; override the port with ``--display_port=<port>``).
 
@@ -91,7 +103,7 @@ lerobot-record \\
 
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pprint import pformat
 
 from lerobot.cameras import CameraConfig  # noqa: F401
@@ -100,8 +112,15 @@ from lerobot.cameras.reachy2_camera import Reachy2CameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.cameras.zmq import ZMQCameraConfig  # noqa: F401
 from lerobot.common.control_utils import sanity_check_dataset_robot_compatibility
+from lerobot.common.grasp_object_detection import (
+    GraspTargetTracker,
+    extend_observation_state_features,
+    format_best_detection_log,
+    make_grasp_target_tracker,
+)
 from lerobot.configs import parser
 from lerobot.configs.dataset import DatasetRecordConfig
+from lerobot.configs.object_detection import GraspObjectDetectionConfig
 from lerobot.datasets import (
     LeRobotDataset,
     VideoEncodingManager,
@@ -195,6 +214,9 @@ class RecordConfig:
     teleop: TeleoperatorConfig | None = None
     # Hardware leader-follower on one CAN: record follower state as action, do not send commands.
     direct_record: bool = False
+    # Optional YOLO detection of grasp targets before each episode / grasp attempt.
+    # When enabled, the highest-confidence detection is appended to observation.state.
+    object_detection: GraspObjectDetectionConfig = field(default_factory=GraspObjectDetectionConfig)
     # Display all cameras on screen
     display_data: bool = False
     # Visualization backend used when display_data is True: "rerun" or "foxglove".
@@ -275,6 +297,8 @@ def record_loop(
     display_compressed_images: bool = False,
     timer: CycleTimer | None = None,
     direct_record: bool = False,
+    grasp_target_values: dict[str, float] | None = None,
+    grasp_tracker: GraspTargetTracker | None = None,
 ):
     """Drive the robot from the teleoperator at *fps*, optionally recording each frame.
 
@@ -287,6 +311,12 @@ def record_loop(
 
     When *direct_record* is True, actions are taken from the follower observation and
     are not sent to the robot (hardware leader-follower already moves the arm).
+
+    *grasp_target_values* are optional flat keys (e.g. ``grasp_target.cx``) merged into
+    every processed observation so they are written into ``observation.state``.
+
+    *grasp_tracker* optionally annotates the live display with the recommended grasp
+    target. Annotated frames are display-only and are never written to the dataset.
     """
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -338,6 +368,8 @@ def record_loop(
         with timer.section("process_obs"):
             # Applies a pipeline to the raw robot observation, default is IdentityProcessor
             obs_processed = robot_observation_processor(obs)
+            if grasp_target_values is not None:
+                obs_processed = {**obs_processed, **grasp_target_values}
 
             if dataset is not None:
                 observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
@@ -402,9 +434,14 @@ def record_loop(
 
         if display_data:
             with timer.section("telemetry"):
+                display_obs = (
+                    grasp_tracker.annotate_observation(obs_processed)
+                    if grasp_tracker is not None
+                    else obs_processed
+                )
                 log_visualization_data(
                     display_mode,
-                    observation=obs_processed,
+                    observation=display_obs,
                     action=action_values,
                     compress_images=display_compressed_images,
                 )
@@ -475,6 +512,8 @@ def record(
             use_videos=cfg.dataset.video,
         ),
     )
+    if cfg.object_detection.enabled:
+        dataset_features = extend_observation_state_features(dataset_features)
 
     dataset = None
     listener = None
@@ -537,6 +576,16 @@ def record(
 
         listener, events = init_keyboard_listener()
 
+        grasp_tracker = make_grasp_target_tracker(cfg.object_detection)
+        if grasp_tracker is not None:
+            logging.info(
+                "Grasp-object detection enabled "
+                f"(model={cfg.object_detection.model_path}, "
+                f"camera_key={cfg.object_detection.camera_key!r}, "
+                f"conf={cfg.object_detection.conf}). "
+                "Highest-confidence target is appended to observation.state."
+            )
+
         if not cfg.dataset.streaming_encoding:
             logging.info(
                 "Streaming encoding is disabled. If you have capable hardware, consider enabling it for way faster episode saving. --dataset.streaming_encoding=true --dataset.encoder_threads=2 # --dataset.rgb_encoder.vcodec=auto. More info in the documentation: https://huggingface.co/docs/lerobot/streaming_video_encoding"
@@ -546,6 +595,36 @@ def record(
             recorded_episodes = 0
             while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
                 episode_index = dataset.num_episodes
+                grasp_target_values = None
+
+                if grasp_tracker is not None:
+                    obs = robot.get_observation()
+                    best = grasp_tracker.refresh(obs)
+                    grasp_target_values = grasp_tracker.state_values
+                    logging.info(
+                        "Episode %s pre-record detection:\n%s",
+                        episode_index,
+                        format_best_detection_log(best, grasp_tracker.detector.last_camera_key),
+                    )
+                    if best is not None:
+                        logging.info("  selected detection detail: %s", best.as_dict())
+                    log_say(
+                        f"Recommended grasp target confidence {best.confidence:.2f}"
+                        if best is not None
+                        else "No grasp target detected",
+                        cfg.play_sounds,
+                    )
+                    # Show the recommended target on the live viewer before teleop starts.
+                    if cfg.display_data:
+                        preview_obs = robot_observation_processor(obs)
+                        preview_obs = grasp_tracker.annotate_observation(preview_obs)
+                        log_visualization_data(
+                            cfg.display_mode,
+                            observation=preview_obs,
+                            action=None,
+                            compress_images=display_compressed_images,
+                        )
+
                 log_say(f"Recording episode {episode_index}", cfg.play_sounds)
                 record_loop(
                     robot=robot,
@@ -563,6 +642,8 @@ def record(
                     display_compressed_images=display_compressed_images,
                     timer=timer,
                     direct_record=cfg.direct_record,
+                    grasp_target_values=grasp_target_values,
+                    grasp_tracker=grasp_tracker,
                 )
 
                 # Execute a few seconds without recording to give time to manually reset the environment

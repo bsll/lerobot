@@ -25,6 +25,7 @@ import draccus
 
 from lerobot.configs import PreTrainedConfig, parser
 from lerobot.configs.dataset import DatasetRecordConfig
+from lerobot.configs.object_detection import GraspObjectDetectionConfig
 from lerobot.robots.config import RobotConfig
 from lerobot.teleoperators.config import TeleoperatorConfig
 from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
@@ -293,6 +294,10 @@ class RolloutConfig:
 
     # Dataset (required, optional or rejected according to the strategy's ``dataset_mode``)
     dataset: DatasetRecordConfig | None = None
+
+    # Optional YOLO grasp-target detection. When enabled, refresh before each
+    # episode/run and append the highest-confidence target to observation.state.
+    object_detection: GraspObjectDetectionConfig = field(default_factory=GraspObjectDetectionConfig)
 
     # Runtime
     fps: float = 30.0
