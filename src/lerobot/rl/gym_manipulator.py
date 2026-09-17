@@ -39,9 +39,11 @@ from lerobot.processor import (
     GymHILAdapterProcessorStep,
     ImageCropResizeProcessorStep,
     InterventionActionProcessorStep,
+    LeaderHandoverProcessorStep,
     MapDeltaActionToRobotActionStep,
     MapTensorToDeltaActionDictStep,
     Numpy2TorchActionProcessorStep,
+    ResolveLeaderActionProcessorStep,
     RewardClassifierProcessorStep,
     RobotActionToPolicyActionProcessorStep,
     RobotObservation,
@@ -71,6 +73,7 @@ from lerobot.teleoperators import (
     make_teleoperator_from_config,
     so_leader,  # noqa: F401
 )
+from lerobot.teleoperators.so_leader import leader_keyboard  # noqa: F401
 from lerobot.teleoperators.teleoperator import Teleoperator
 from lerobot.teleoperators.utils import TeleopEvents
 from lerobot.utils.constants import ACTION, DONE, OBS_IMAGES, OBS_STATE, REWARD
@@ -486,19 +489,28 @@ def make_processors(
     action_pipeline_steps = [
         AddTeleopActionAsComplimentaryDataStep(teleop_device=teleop_device),
         AddTeleopEventsAsInfoStep(teleop_device=teleop_device),
-        InterventionActionProcessorStep(
-            use_gripper=cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else False,
-            terminate_on_success=terminate_on_success,
-        ),
     ]
 
-    # Replace InverseKinematicsProcessor with new kinematic processors
+    use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else False
+    is_leader_control = cfg.processor.control_mode == "leader"
+    if is_leader_control and (cfg.processor.inverse_kinematics is None or kinematics_solver is None):
+        raise ValueError(
+            "Leader control mode requires `env.processor.inverse_kinematics` with a valid URDF path."
+        )
+
+    if is_leader_control:
+        action_pipeline_steps.append(LeaderHandoverProcessorStep(teleop_device=teleop_device))
+        action_pipeline_steps.append(
+            InterventionActionProcessorStep(
+                use_gripper=use_gripper,
+                terminate_on_success=terminate_on_success,
+                motor_names=motor_names,
+            )
+        )
+
     if cfg.processor.inverse_kinematics is not None and kinematics_solver is not None:
-        # Add EE bounds and safety processor
         inverse_kinematics_steps = [
-            MapTensorToDeltaActionDictStep(
-                use_gripper=cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else False
-            ),
+            MapTensorToDeltaActionDictStep(use_gripper=use_gripper),
             MapDeltaActionToRobotActionStep(),
             EEReferenceAndDelta(
                 kinematics=kinematics_solver,
@@ -518,9 +530,31 @@ def make_processors(
             InverseKinematicsRLStep(
                 kinematics=kinematics_solver, motor_names=motor_names, initial_guess_current_joints=False
             ),
+            RobotActionToPolicyActionProcessorStep(motor_names=motor_names),
         ]
-        action_pipeline_steps.extend(inverse_kinematics_steps)
-        action_pipeline_steps.append(RobotActionToPolicyActionProcessorStep(motor_names=motor_names))
+
+        if is_leader_control:
+            action_pipeline_steps.append(
+                ResolveLeaderActionProcessorStep(
+                    motor_names=motor_names,
+                    ik_steps=inverse_kinematics_steps,
+                )
+            )
+        else:
+            action_pipeline_steps.append(
+                InterventionActionProcessorStep(
+                    use_gripper=use_gripper,
+                    terminate_on_success=terminate_on_success,
+                )
+            )
+            action_pipeline_steps.extend(inverse_kinematics_steps)
+    elif not is_leader_control:
+        action_pipeline_steps.append(
+            InterventionActionProcessorStep(
+                use_gripper=use_gripper,
+                terminate_on_success=terminate_on_success,
+            )
+        )
 
     return DataProcessorPipeline(
         steps=env_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
@@ -631,7 +665,11 @@ def control_loop(
 
     print(f"Starting control loop at {cfg.env.fps} FPS")
     print("Controls:")
-    print("- Use gamepad/teleop device for intervention")
+    if cfg.env.processor.control_mode == "leader":
+        print("- Space: toggle human intervention (leader arm)")
+        print("- s: success | Esc: failure | r: rerecord episode")
+    else:
+        print("- Use gamepad/teleop device for intervention")
     print("- When not intervening, robot will stay still")
     print("- Press Ctrl+C to exit")
 
@@ -642,7 +680,14 @@ def control_loop(
 
     dataset = None
     if cfg.mode == "record":
-        if teleop_device:
+        if cfg.env.processor.control_mode == "leader":
+            motor_names = list(env.robot.bus.motors.keys())
+            action_features = {
+                "dtype": "float32",
+                "shape": (len(motor_names),),
+                "names": motor_names,
+            }
+        elif teleop_device:
             action_features = teleop_device.action_features
         else:
             action_features = {

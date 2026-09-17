@@ -16,7 +16,7 @@
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 
 import numpy as np
@@ -464,6 +464,30 @@ class InterventionActionProcessorStep(ProcessorStep):
 
     use_gripper: bool = False
     terminate_on_success: bool = True
+    motor_names: list[str] | None = None
+
+    def _teleop_action_to_tensor(
+        self, teleop_action: dict | np.ndarray | list, action: PolicyAction
+    ) -> PolicyAction:
+        if isinstance(teleop_action, dict):
+            if self.motor_names is not None and any(
+                isinstance(key, str) and key.endswith(".pos") for key in teleop_action
+            ):
+                action_list = [teleop_action[f"{name}.pos"] for name in self.motor_names]
+            else:
+                action_list = [
+                    teleop_action.get("delta_x", 0.0),
+                    teleop_action.get("delta_y", 0.0),
+                    teleop_action.get("delta_z", 0.0),
+                ]
+                if self.use_gripper:
+                    action_list.append(teleop_action.get(GRIPPER_KEY, 1.0))
+        elif isinstance(teleop_action, np.ndarray):
+            action_list = teleop_action.tolist()
+        else:
+            action_list = teleop_action
+
+        return torch.tensor(action_list, dtype=action.dtype, device=action.device)
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         """
@@ -493,21 +517,7 @@ class InterventionActionProcessorStep(ProcessorStep):
 
         # Override action if intervention is active
         if is_intervention and teleop_action is not None:
-            if isinstance(teleop_action, dict):
-                # Convert teleop_action dict to tensor format
-                action_list = [
-                    teleop_action.get("delta_x", 0.0),
-                    teleop_action.get("delta_y", 0.0),
-                    teleop_action.get("delta_z", 0.0),
-                ]
-                if self.use_gripper:
-                    action_list.append(teleop_action.get(GRIPPER_KEY, 1.0))
-            elif isinstance(teleop_action, np.ndarray):
-                action_list = teleop_action.tolist()
-            else:
-                action_list = teleop_action
-
-            teleop_action_tensor = torch.tensor(action_list, dtype=action.dtype, device=action.device)
+            teleop_action_tensor = self._teleop_action_to_tensor(teleop_action, action)
             new_transition[TransitionKey.ACTION] = teleop_action_tensor
 
         # Handle episode termination
@@ -540,11 +550,78 @@ class InterventionActionProcessorStep(ProcessorStep):
         return {
             "use_gripper": self.use_gripper,
             "terminate_on_success": self.terminate_on_success,
+            "motor_names": self.motor_names,
         }
 
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+
+@dataclass
+@ProcessorStepRegistry.register("leader_handover_processor")
+class LeaderHandoverProcessorStep(ProcessorStep):
+    """Sync the leader arm to the follower pose when human intervention starts."""
+
+    teleop_device: "Teleoperator"
+    _was_intervention: bool = field(default=False, init=False, repr=False)
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        info = transition.get(TransitionKey.INFO, {})
+        is_intervention = bool(info.get(TeleopEvents.IS_INTERVENTION, False))
+
+        if is_intervention and not self._was_intervention:
+            raw_joint_positions = transition.get(TransitionKey.COMPLEMENTARY_DATA, {}).get(
+                "raw_joint_positions"
+            )
+            if raw_joint_positions and hasattr(self.teleop_device, "send_feedback"):
+                self.teleop_device.send_feedback(raw_joint_positions)
+
+        self._was_intervention = is_intervention
+        return transition
+
+    def reset(self) -> None:
+        self._was_intervention = False
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+
+@dataclass
+@ProcessorStepRegistry.register("resolve_leader_action_processor")
+class ResolveLeaderActionProcessorStep(ProcessorStep):
+    """Resolve policy EE deltas or leader joint targets into follower joint commands."""
+
+    motor_names: list[str]
+    ik_steps: list[ProcessorStep]
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        action = transition.get(TransitionKey.ACTION)
+        if not isinstance(action, PolicyAction):
+            raise ValueError(f"Action should be a PolicyAction type got {type(action)}")
+
+        flat_action = action.squeeze(0) if action.dim() > 1 else action
+        if flat_action.shape[0] == len(self.motor_names):
+            transition[TransitionKey.ACTION] = flat_action
+            return transition
+
+        for step in self.ik_steps:
+            transition = step(transition)
+        return transition
+
+    def reset(self) -> None:
+        for step in self.ik_steps:
+            if hasattr(step, "reset"):
+                step.reset()
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        for step in self.ik_steps:
+            features = step.transform_features(features)
         return features
 
 

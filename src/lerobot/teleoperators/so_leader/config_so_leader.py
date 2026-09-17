@@ -45,3 +45,10 @@ class SOLeaderTeleopConfig(TeleoperatorConfig, SOLeaderConfig):
 
 SO100LeaderConfig = SOLeaderTeleopConfig
 SO101LeaderConfig = SOLeaderTeleopConfig
+
+
+@TeleoperatorConfig.register_subclass("so101_leader_keyboard")
+@TeleoperatorConfig.register_subclass("so100_leader_keyboard")
+@dataclass
+class SOLeaderKeyboardTeleopConfig(SOLeaderTeleopConfig):
+    """SO leader arm with keyboard episode / intervention controls for HIL-SERL."""
