@@ -5,7 +5,11 @@
 #   Recording used --direct_record (PC only listened). Inference MUST send
 #   joint commands to the follower. Before running this script:
 #     1. Disable hardware master-slave / leave only the follower under PC control
-#     2. Keep the workspace clear; the arm will move to the parking pose on connect
+#     2. Manually move the arm to your task start pose (same as recording)
+#     3. Keep the workspace clear
+#
+# Scripts pass --robot.calibrate_on_connect=false so connect() does NOT parking()
+# to SDK origin; episodic → reset returns to the pose captured at launch.
 #
 # Bring up CAN first, e.g.:
 #   sudo ip link set can0 down
@@ -55,6 +59,7 @@ lerobot-rollout --strategy.type=base --policy.path="${POLICY_PATH}"  --robot.typ
   --robot.port="${CAN_PORT}" \
   --robot.id=follower \
   --robot.disable_torque_on_disconnect=false \
+  --robot.calibrate_on_connect=false \
   --robot.cameras="{
     front: {type: opencv, index_or_path: /dev/video4, width: 640, height: 480, fps: 30, backend: V4L2},
     wrist: {type: opencv, index_or_path: /dev/video10, width: 640, height: 480, fps: 30, backend: V4L2}

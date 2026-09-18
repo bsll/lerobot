@@ -27,11 +27,13 @@ Workflow
 from __future__ import annotations
 
 import logging
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 
@@ -207,12 +209,25 @@ class GraspObjectDetector:
         self.model = YOLO(str(model_path))
         self.last_camera_key: str | None = None
         self.last_detections: list[GraspObjectDetection] = []
-        logger.info("Loaded grasp-object YOLO model from %s (task=%s)", model_path, self.model.task)
+        logger.info(
+            "Loaded grasp-object YOLO model from %s (task=%s, conf=%s, rgb→bgr=%s)",
+            model_path,
+            self.model.task,
+            cfg.conf,
+            cfg.convert_rgb_to_bgr,
+        )
 
     def detect_image(self, image: NDArray[Any]) -> list[GraspObjectDetection]:
-        """Run detection on an HxWx3 image (RGB or BGR; YOLO accepts either)."""
+        """Run detection on an HxWx3 robot image (RGB by default).
+
+        When ``cfg.convert_rgb_to_bgr`` is True (default), converts to BGR before
+        YOLO so inference matches ``collect_yolo_images`` (OpenCV VideoCapture).
+        """
         device = None if self.cfg.device == "auto" else self.cfg.device
-        result = self.model.predict(image, conf=self.cfg.conf, device=device, verbose=False)[0]
+        infer = image
+        if self.cfg.convert_rgb_to_bgr:
+            infer = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        result = self.model.predict(infer, conf=self.cfg.conf, device=device, verbose=False)[0]
         detections: list[GraspObjectDetection] = []
 
         obb = result.obb
@@ -261,7 +276,7 @@ class GraspObjectDetector:
             detections = [
                 d for d in detections if x_min <= d.cx < x_max and y_min <= d.cy < y_max
             ]
-            logger.info(
+            logger.debug(
                 "ROI filter (cx,cy) in [%.1f,%.1f)x[%.1f,%.1f) kept %d/%d detections",
                 x_min,
                 x_max,
@@ -290,29 +305,73 @@ class GraspTargetTracker:
         self.state_values: dict[str, float] = empty_grasp_target_state_values()
         self.last_image_hw: tuple[int, int] | None = None
 
-    def refresh(self, observation: dict[str, Any]) -> GraspObjectDetection | None:
-        """Detect targets, keep the highest-confidence one, and update state values."""
-        camera_key, image = select_camera_image(observation, self.detector.cfg.camera_key)
-        self.detector.last_camera_key = camera_key
-        self.last_image_hw = (int(image.shape[0]), int(image.shape[1]))
+    def refresh(
+        self,
+        observation: dict[str, Any] | None = None,
+        *,
+        get_observation: Callable[[], dict[str, Any]] | None = None,
+    ) -> GraspObjectDetection | None:
+        """Detect over one or more frames; keep the highest-confidence target.
 
-        detections = self.detector.detect_image(image)
-        best = select_best_detection(detections)
+        Prefer ``get_observation`` so ``num_detect_frames`` consecutive grabs can
+        advance the camera buffer. If only ``observation`` is passed, a single
+        frame is used (backward compatible).
+        """
+        if get_observation is None and observation is None:
+            raise ValueError("refresh() requires observation=... or get_observation=...")
+
+        n = max(1, int(self.detector.cfg.num_detect_frames))
+        interval = float(self.detector.cfg.detect_frame_interval_s)
+        if get_observation is None:
+            n = 1
+
+            def get_observation() -> dict[str, Any]:
+                assert observation is not None
+                return observation
+
+        best: GraspObjectDetection | None = None
+        last_obs: dict[str, Any] | None = None
+        per_frame_conf: list[float] = []
+
+        for i in range(n):
+            obs = get_observation()
+            last_obs = obs
+            camera_key, image = select_camera_image(obs, self.detector.cfg.camera_key)
+            self.detector.last_camera_key = camera_key
+            self.last_image_hw = (int(image.shape[0]), int(image.shape[1]))
+
+            detections = self.detector.detect_image(image)
+            frame_best = select_best_detection(detections)
+            per_frame_conf.append(frame_best.confidence if frame_best is not None else 0.0)
+            if frame_best is not None and (best is None or frame_best.confidence > best.confidence):
+                best = frame_best
+
+            if i + 1 < n and interval > 0.0:
+                time.sleep(interval)
+
+        assert last_obs is not None
         self.selected = best
         if best is None:
             logger.warning(
-                "No grasp target detected on camera %r — writing zeros into state.",
+                "No grasp target detected on camera %r over %d frame(s) "
+                "(per-frame max conf=%s) — writing zeros into state.",
                 self.detector.last_camera_key,
+                n,
+                [round(c, 3) for c in per_frame_conf],
             )
             self.state_values = empty_grasp_target_state_values()
             return None
 
+        assert self.last_image_hw is not None
         self.state_values = best.to_state_values(self.last_image_hw)
         logger.info(
-            "Selected grasp target on camera %r: %s conf=%.2f "
+            "Selected grasp target on camera %r over %d frame(s) "
+            "(per-frame max conf=%s): %s conf=%.2f "
             "pixel_center=(%.1f, %.1f) pixel_size=(%.1fx%.1f) angle=%.3frad | "
             "normalized state=%s",
             self.detector.last_camera_key,
+            n,
+            [round(c, 3) for c in per_frame_conf],
             best.class_name,
             best.confidence,
             best.cx,
@@ -345,7 +404,6 @@ class GraspTargetTracker:
         annotated = draw_grasp_guidance(
             image,
             selected=self.selected,
-            others=self.detector.last_detections,
             roi=(
                 self.detector.cfg.min_cx_ratio,
                 self.detector.cfg.min_cy_ratio,
@@ -365,93 +423,39 @@ def draw_grasp_guidance(
     label: str = "GRASP THIS",
     roi: tuple[float, float, float, float] | None = None,
 ) -> NDArray[Any]:
-    """Draw OBB guidance on a camera frame (RGB or BGR HxWx3).
+    """Draw minimal OBB guidance on a camera frame (RGB or BGR HxWx3).
 
-    Non-selected detections are drawn faintly; the selected target is emphasized
-    with a thick box, center mark, and ``label`` text.
-
-    ``roi`` is optional normalized ``(min_cx, min_cy, max_cx, max_cy)`` used to
-    visualize the keep-region rectangle.
+    Shows the ROI rectangle (when set), plus the selected target box and confidence.
+    ``others`` / ``label`` are kept for call-site compatibility but ignored.
     """
+    del others, label
     import cv2
 
     canvas = np.ascontiguousarray(image.copy())
-    others = others or []
     h, w = canvas.shape[:2]
 
     if roi is not None:
         min_cx, min_cy, max_cx, max_cy = roi
-        if min_cx > 0.0 or max_cx < 1.0 or min_cy > 0.0 or max_cy < 1.0:
-            x1, y1 = int(min_cx * w), int(min_cy * h)
-            x2, y2 = int(max_cx * w) - 1, int(max_cy * h) - 1
-            cv2.rectangle(canvas, (x1, y1), (x2, y2), (80, 180, 255), 2)
-            cv2.putText(
-                canvas,
-                "ROI",
-                (x1 + 4, max(y1 + 18, 18)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (80, 180, 255),
-                2,
-                cv2.LINE_AA,
-            )
+        x1, y1 = int(min_cx * w), int(min_cy * h)
+        x2, y2 = int(max_cx * w) - 1, int(max_cy * h) - 1
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), (80, 180, 255), 1)
 
-    def _draw_obb(
-        det: GraspObjectDetection,
-        color: tuple[int, int, int],
-        thickness: int,
-        with_label: bool = False,
-    ) -> None:
-        pts = np.asarray(det.corners, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.polylines(canvas, [pts], isClosed=True, color=color, thickness=thickness)
-        cx_i, cy_i = int(round(det.cx)), int(round(det.cy))
-        cv2.drawMarker(
-            canvas,
-            (cx_i, cy_i),
-            color=color,
-            markerType=cv2.MARKER_CROSS,
-            markerSize=18,
-            thickness=max(thickness, 2),
-        )
-        if with_label:
-            text = f"{label} conf={det.confidence:.2f}"
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            scale = 0.7
-            text_thickness = 2
-            (tw, th), baseline = cv2.getTextSize(text, font, scale, text_thickness)
-            x = max(0, min(cx_i - tw // 2, canvas.shape[1] - tw - 1))
-            y = max(th + 4, min(cy_i - 16, canvas.shape[0] - baseline - 1))
-            cv2.rectangle(
-                canvas,
-                (x - 4, y - th - 4),
-                (x + tw + 4, y + baseline + 4),
-                (0, 0, 0),
-                thickness=-1,
-            )
-            cv2.putText(canvas, text, (x, y), font, scale, color, text_thickness, cv2.LINE_AA)
+    if selected is None:
+        return canvas
 
-    for det in others:
-        if selected is not None and det is selected:
-            continue
-        # Same identity may not hold after refresh; also skip by geometry match.
-        if selected is not None and abs(det.cx - selected.cx) < 1e-3 and abs(det.cy - selected.cy) < 1e-3:
-            continue
-        _draw_obb(det, color=(255, 220, 0), thickness=1, with_label=False)
+    color = (0, 255, 80)
+    pts = np.asarray(selected.corners, dtype=np.int32).reshape(-1, 1, 2)
+    cv2.polylines(canvas, [pts], isClosed=True, color=color, thickness=2)
 
-    if selected is not None:
-        _draw_obb(selected, color=(0, 255, 80), thickness=3, with_label=True)
-    else:
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(
-            canvas,
-            "NO TARGET — check camera / detection",
-            (12, 28),
-            font,
-            0.7,
-            (255, 64, 64),
-            2,
-            cv2.LINE_AA,
-        )
+    text = f"{selected.confidence:.2f}"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.55
+    text_thickness = 1
+    (tw, th), baseline = cv2.getTextSize(text, font, scale, text_thickness)
+    cx_i, cy_i = int(round(selected.cx)), int(round(selected.cy))
+    x = max(0, min(cx_i - tw // 2, canvas.shape[1] - tw - 1))
+    y = max(th + 2, min(cy_i - 8, canvas.shape[0] - baseline - 1))
+    cv2.putText(canvas, text, (x, y), font, scale, color, text_thickness, cv2.LINE_AA)
 
     return canvas
 

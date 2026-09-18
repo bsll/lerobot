@@ -259,7 +259,7 @@ class EpisodicStrategy(RolloutStrategy):
 
             if action_dict is not None:
                 with timer.section("telemetry"):
-                    self._log_telemetry(obs_processed, action_dict, ctx.runtime)
+                    self._log_telemetry(obs_processed, action_dict, ctx.runtime, ctx.grasp_target)
                 # Record once per interpolation cycle so the dataset cadence
                 # matches its declared fps; interpolated ticks only send
                 # commands to the robot.

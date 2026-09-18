@@ -32,6 +32,11 @@ class PiperFollowerConfig(RobotConfig):
 
     disable_torque_on_disconnect: bool = True
 
+    # When True (default), connect() runs parking() and moves to INITIALIZE_POSITION
+    # (SDK "origin"). Set False for rollout/eval: manually place the arm in your
+    # task start pose before launching; episodic reset will return to that pose.
+    calibrate_on_connect: bool = True
+
     # Cap relative joint targets for safety. Scalar applies to all joints, or map by motor name.
     max_relative_target: float | dict[str, float] | None = None
 

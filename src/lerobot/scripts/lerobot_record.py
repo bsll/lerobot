@@ -598,8 +598,7 @@ def record(
                 grasp_target_values = None
 
                 if grasp_tracker is not None:
-                    obs = robot.get_observation()
-                    best = grasp_tracker.refresh(obs)
+                    best = grasp_tracker.refresh(get_observation=robot.get_observation)
                     grasp_target_values = grasp_tracker.state_values
                     logging.info(
                         "Episode %s pre-record detection:\n%s",
@@ -616,7 +615,7 @@ def record(
                     )
                     # Show the recommended target on the live viewer before teleop starts.
                     if cfg.display_data:
-                        preview_obs = robot_observation_processor(obs)
+                        preview_obs = robot_observation_processor(robot.get_observation())
                         preview_obs = grasp_tracker.annotate_observation(preview_obs)
                         log_visualization_data(
                             cfg.display_mode,

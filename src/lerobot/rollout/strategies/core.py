@@ -21,7 +21,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
-from lerobot.common.grasp_object_detection import format_best_detection_log
+from lerobot.common.grasp_object_detection import GraspTargetTracker, format_best_detection_log
 from lerobot.datasets.utils import DEFAULT_VIDEO_FILE_SIZE_IN_MB
 from lerobot.utils.action_interpolator import ActionInterpolator
 from lerobot.utils.constants import OBS_STR
@@ -133,11 +133,12 @@ class RolloutStrategy(abc.ABC):
         return self._cached_obs_processed
 
     def _refresh_grasp_target(self, ctx: RolloutContext) -> None:
-        """Run YOLO once and cache the highest-confidence grasp target for this episode/run."""
+        """Run YOLO over several frames; cache the highest-confidence grasp target."""
         if ctx.grasp_target is None:
             return
-        obs = ctx.hardware.robot_wrapper.get_observation()
-        best = ctx.grasp_target.refresh(obs)
+        best = ctx.grasp_target.refresh(
+            get_observation=ctx.hardware.robot_wrapper.get_observation,
+        )
         summary = format_best_detection_log(best, ctx.grasp_target.detector.last_camera_key)
         logger.info("Pre-rollout grasp detection:\n%s", summary)
         log_say(
@@ -146,6 +147,18 @@ class RolloutStrategy(abc.ABC):
             else "No grasp target detected",
             ctx.runtime.cfg.play_sounds,
         )
+        cfg = ctx.runtime.cfg
+        if cfg.display_data:
+            preview_obs = ctx.processors.robot_observation_processor(
+                ctx.hardware.robot_wrapper.get_observation()
+            )
+            preview_obs = ctx.grasp_target.annotate_observation(preview_obs)
+            log_visualization_data(
+                cfg.display_mode,
+                observation=preview_obs,
+                action=None,
+                compress_images=cfg.display_compressed_images,
+            )
         # Force the next observation tick to rebuild with the new target values.
         self._cached_obs_processed = None
 
@@ -225,14 +238,18 @@ class RolloutStrategy(abc.ABC):
         obs_processed: dict | None,
         action_dict: dict | None,
         runtime_ctx: RuntimeContext,
+        grasp_target: GraspTargetTracker | None = None,
     ) -> None:
         """Log observation/action telemetry to the visualization backend if display_data is enabled."""
         cfg = runtime_ctx.cfg
         if not cfg.display_data:
             return
+        display_obs = obs_processed
+        if display_obs is not None and grasp_target is not None:
+            display_obs = grasp_target.annotate_observation(display_obs)
         log_visualization_data(
             cfg.display_mode,
-            observation=obs_processed,
+            observation=display_obs,
             action=action_dict,
             compress_images=cfg.display_compressed_images,
         )

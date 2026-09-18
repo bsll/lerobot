@@ -423,7 +423,7 @@ class DAggerStrategy(RolloutStrategy):
                             robot.send_action(robot_action_to_send)
                         last_action = robot_action_to_send
                         with timer.section("telemetry"):
-                            self._log_telemetry(obs_processed, processed_teleop, ctx.runtime)
+                            self._log_telemetry(obs_processed, processed_teleop, ctx.runtime, ctx.grasp_target)
                         if correction_tick % correction_stride == 0:
                             with timer.section("record"):
                                 obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
@@ -454,7 +454,7 @@ class DAggerStrategy(RolloutStrategy):
                         action_dict = send_next_action(obs_processed, obs, ctx, interpolator, timer)
                         if action_dict is not None:
                             with timer.section("telemetry"):
-                                self._log_telemetry(obs_processed, action_dict, ctx.runtime)
+                                self._log_telemetry(obs_processed, action_dict, ctx.runtime, ctx.grasp_target)
                             last_action = ctx.processors.robot_action_processor((action_dict, obs))
                             if interpolator.emitted_policy_action:
                                 with timer.section("record"):
@@ -626,7 +626,7 @@ class DAggerStrategy(RolloutStrategy):
                             robot.send_action(robot_action_to_send)
                         last_action = robot_action_to_send
                         with timer.section("telemetry"):
-                            self._log_telemetry(obs_processed, processed_teleop, ctx.runtime)
+                            self._log_telemetry(obs_processed, processed_teleop, ctx.runtime, ctx.grasp_target)
 
                         if correction_tick % correction_stride == 0:
                             with timer.section("record"):
@@ -659,7 +659,7 @@ class DAggerStrategy(RolloutStrategy):
                         action_dict = send_next_action(obs_processed, obs, ctx, interpolator, timer)
                         if action_dict is not None:
                             with timer.section("telemetry"):
-                                self._log_telemetry(obs_processed, action_dict, ctx.runtime)
+                                self._log_telemetry(obs_processed, action_dict, ctx.runtime, ctx.grasp_target)
                             last_action = ctx.processors.robot_action_processor((action_dict, obs))
 
                     timer.wait()

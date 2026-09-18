@@ -130,7 +130,7 @@ class HighlightStrategy(RolloutStrategy):
 
                     if action_dict is not None:
                         with timer.section("telemetry"):
-                            self._log_telemetry(obs_processed, action_dict, ctx.runtime)
+                            self._log_telemetry(obs_processed, action_dict, ctx.runtime, ctx.grasp_target)
 
                         if self._push_requested.is_set():
                             self._push_requested.clear()

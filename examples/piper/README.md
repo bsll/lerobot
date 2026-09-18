@@ -58,6 +58,17 @@ bash examples/piper/3c_record_singleport_grasp.sh
 
 训练时 state 维数已含这 5 维；**推理也必须开同一套** `--object_detection.*`（见 [`5c_rollout_grasp.sh`](./5c_rollout_grasp.sh)）。
 
+### 2c. 采集 YOLO 训练图片
+
+只采 front 静帧（不连机械臂），用于重训 / 微调检测模型：
+
+```bash
+# 每次只框 conf 最高的一个（≥0.5）；拿走后按 n；没有目标时再 Space 保存
+bash examples/piper/collect_yolo_images.sh
+```
+
+预览窗口焦点下：`n` 表示已拿走当前目标 → 倒计时后显示下一个；**没有检测时**才提示 `Space`/`s` 保存干净图；`Esc`/`q` 退出。
+
 ### 3. 训练
 
 ```bash
@@ -87,6 +98,13 @@ export EPISODE=0
 bash examples/piper/5b_replay.sh
 ```
 
+把某一集的 `observation.state` / `action` 关节用 Piper FK 转成末端 XYZ 并画图：
+
+```bash
+EPISODE=0 bash examples/piper/plot_ee_trajectory.sh
+# 图默认：outputs/ee_traj/piper_grasp_demo_ep000.png
+```
+
 若数据集是用 `3c` 采的（state 含 grasp 5 维），推理请用：
 
 ```bash
@@ -94,6 +112,20 @@ export MODEL_PATH=/path/to/best.pt
 export POLICY_PATH=.../pretrained_model
 bash examples/piper/5c_rollout_grasp.sh
 ```
+
+需要 **→ / ← 方向键** 控制集数/重录时，用 episodic 版（会落盘到 `train_data/rollout_*`）。默认开 **RTC**（`--inference.type=rtc`），适合 SmolVLA 等慢 VLA：
+
+```bash
+# 先把机械臂摆到与采集时相同的起始位姿，再启动（不会自动 parking 到零点）
+export JOB_NAME=piper_grasp_demo_smolvla
+bash examples/piper/5d_rollout_grasp_episodic.sh
+
+# 可选：调 RTC / 切回同步推理
+# export RTC_EXECUTION_HORIZON=10 RTC_MAX_GUIDANCE_WEIGHT=10.0 RTC_QUEUE_THRESHOLD=30
+# export INFERENCE_TYPE=sync
+```
+
+按 **→** 结束一集后，从臂会插值回到**脚本启动时**记录的关节位姿（`initial_position`），用于下一集复位。若启动前未手动摆位、或仍用默认 `calibrate_on_connect=true`，则“初始位姿”会是 SDK 的 parking 零点 `(0,-100,100,0,35,0)`，看起来就像回到零点。
 
 ---
 
@@ -133,6 +165,7 @@ bash examples/piper/3_record.sh
 
 - 策略推理：[`5_rollout.sh`](./5_rollout.sh)（`lerobot-rollout --strategy.type=base`）
 - 带抓取目标 state 的推理：[`5c_rollout_grasp.sh`](./5c_rollout_grasp.sh)
+- 带 grasp + 方向键 episodic 推理/录 eval：[`5d_rollout_grasp_episodic.sh`](./5d_rollout_grasp_episodic.sh)
 - 开环回放数据集：[`5b_replay.sh`](./5b_replay.sh)
 
 ```bash
@@ -144,6 +177,7 @@ bash examples/piper/5_rollout.sh
 
 - 单 CAN 录制：确认硬件主从已配好，PC 只监听、不抢控
 - 单 CAN 推理：必须改为 PC 控从臂；不要和硬件主从模式同时抢控
+- 推理 / episodic：启动前手动摆到任务起始位姿；脚本已设 `--robot.calibrate_on_connect=false`（与 `3c` 的 `--direct_record` 一样不在 connect 时 parking）
 - 双 CAN：上电前确认口名；不要和硬件主从模式混用
 - 当前示例相机：`front=/dev/video4`，`wrist=/dev/video10`；换机时改脚本里的路径
 - Linux 上相机请用 `backend: V4L2`（默认 `ANY` 常走 FFMPEG，会导致设不上 640×480）
@@ -161,4 +195,5 @@ bash examples/piper/5_rollout.sh
 | `3c_record_singleport_grasp.sh` | 直录 + YOLO 抓取目标写入 state |
 | `5_rollout.sh` | 真机策略推理 |
 | `5c_rollout_grasp.sh` | 推理时同步注入 grasp state |
+| `5d_rollout_grasp_episodic.sh` | episodic 推理 + grasp + 方向键 |
 | `5b_replay.sh` | 数据集开环回放 |

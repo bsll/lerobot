@@ -379,7 +379,8 @@ def build_rollout_context(
     # --- 3. Hardware (heaviest side-effect, deferred) -----------------
     logger.info("Connecting robot (%s)...", cfg.robot.type if cfg.robot else "?")
     robot = make_robot_from_config(cfg.robot)
-    robot.connect()
+    calibrate_on_connect = getattr(cfg.robot, "calibrate_on_connect", True)
+    robot.connect(calibrate=calibrate_on_connect)
     logger.info("Robot connected: %s", robot.name)
 
     # Store the initial joint positions so we can return to a safe pose on shutdown.
