@@ -15,8 +15,8 @@
 # Rollout frames are saved under train_data/rollout_<name>/ (repo_id must start
 # with rollout_).
 #
-# Defaults to Real-Time Chunking (--inference.type=rtc) for slow VLAs (SmolVLA /
-# Pi0 / Pi0.5). Override with INFERENCE_TYPE=sync for one-call-per-tick.
+# Defaults to synchronous inference (--inference.type=sync).
+# Override with INFERENCE_TYPE=rtc only when asynchronous RTC is explicitly needed.
 #
 # IMPORTANT: disable hardware master-slave before running — PC sends commands.
 #
@@ -34,7 +34,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHECKPOINT_STEP="${CHECKPOINT_STEP:-100000}"
 POLICY_PATH="${POLICY_PATH:-${REPO_ROOT}/outputs/models/${JOB_NAME}/checkpoints/${CHECKPOINT_STEP}/pretrained_model}"
 
-DATASET_NAME="${DATASET_NAME:-rollout_piper_grasp_smolvla_local_test22}"
+DATASET_NAME="${DATASET_NAME:-rollout_piper_grasp_smolvla_eval}"
 DATASET_ROOT="${DATASET_ROOT:-${REPO_ROOT}/train_data/${DATASET_NAME}}"
 RESUME="${RESUME:-false}"
 
@@ -43,8 +43,21 @@ NUM_EPISODES="${NUM_EPISODES:-30}"
 EPISODE_TIME_S="${EPISODE_TIME_S:-60}"
 RESET_TIME_S="${RESET_TIME_S:-1}"
 DEVICE="${DEVICE:-cuda}"
+RECORD="${RECORD:-true}"
 
-# RTC (Real-Time Chunking) — async inference for slow VLAs
+# Optional automatic episode completion: arm leaves the startup pose, then settles at its end pose.
+RESET_TO_INITIAL="${RESET_TO_INITIAL:-true}"
+AUTO_NEXT_GRASP="${AUTO_NEXT_GRASP:-false}"
+AUTO_NEXT_MIN_EPISODE_S="${AUTO_NEXT_MIN_EPISODE_S:-5}"
+AUTO_NEXT_LEAVE_TOL="${AUTO_NEXT_LEAVE_TOL:-55}"
+AUTO_NEXT_END_POSITION="${AUTO_NEXT_END_POSITION:-}"
+AUTO_NEXT_END_TOL="${AUTO_NEXT_END_TOL:-30}"
+AUTO_NEXT_MOTION_TOL="${AUTO_NEXT_MOTION_TOL:-2.5}"
+AUTO_NEXT_MOTION_HOLD_S="${AUTO_NEXT_MOTION_HOLD_S:-0.2}"
+AUTO_NEXT_SETTLE_S="${AUTO_NEXT_SETTLE_S:-0.2}"
+AUTO_NEXT_LOG_INTERVAL_S="${AUTO_NEXT_LOG_INTERVAL_S:-1}"
+
+# Synchronous inference by default; RTC remains available as an explicit override.
 INFERENCE_TYPE="${INFERENCE_TYPE:-sync}"
 RTC_EXECUTION_HORIZON="${RTC_EXECUTION_HORIZON:-15}"
 RTC_MAX_GUIDANCE_WEIGHT="${RTC_MAX_GUIDANCE_WEIGHT:-10.0}"
@@ -88,6 +101,14 @@ if [[ "${INFERENCE_TYPE}" == "rtc" ]]; then
   )
 fi
 
+AUTO_NEXT_ARGS=()
+if [[ -n "${AUTO_NEXT_END_POSITION}" ]]; then
+  AUTO_NEXT_ARGS+=(
+    --strategy.auto_next_end_position="${AUTO_NEXT_END_POSITION}"
+    --strategy.auto_next_end_tolerance="${AUTO_NEXT_END_TOL}"
+  )
+fi
+
 echo "Episodic grasp rollout on Piper"
 echo "  policy         : ${POLICY_PATH}"
 echo "  dataset        : ${DATASET_ROOT}"
@@ -96,6 +117,12 @@ echo "  episodes       : ${NUM_EPISODES} x ${EPISODE_TIME_S}s (+ ${RESET_TIME_S}
 echo "  task           : ${TASK}"
 echo "  CAN            : ${CAN_PORT}"
 echo "  inference      : ${INFERENCE_TYPE}"
+echo "  save trajectory: ${RECORD}"
+echo "  auto next      : ${AUTO_NEXT_GRASP} (leave>=${AUTO_NEXT_LEAVE_TOL}, motion<=${AUTO_NEXT_MOTION_TOL} for ${AUTO_NEXT_MOTION_HOLD_S}s)"
+if [[ -n "${AUTO_NEXT_END_POSITION}" ]]; then
+  echo "  end pose       : ${AUTO_NEXT_END_POSITION} (L1 tolerance=${AUTO_NEXT_END_TOL})"
+fi
+echo "  auto-next log  : every ${AUTO_NEXT_LOG_INTERVAL_S}s"
 if [[ "${INFERENCE_TYPE}" == "rtc" ]]; then
   echo "  RTC            : horizon=${RTC_EXECUTION_HORIZON} guidance=${RTC_MAX_GUIDANCE_WEIGHT} queue_threshold=${RTC_QUEUE_THRESHOLD}"
 fi
@@ -106,6 +133,16 @@ echo
 
 lerobot-rollout \
   --strategy.type=episodic \
+  --strategy.record_episodes="${RECORD}" \
+  --strategy.reset_to_initial_position="${RESET_TO_INITIAL}" \
+  --strategy.auto_next_on_settle="${AUTO_NEXT_GRASP}" \
+  --strategy.auto_next_min_episode_s="${AUTO_NEXT_MIN_EPISODE_S}" \
+  --strategy.auto_next_leave_tolerance="${AUTO_NEXT_LEAVE_TOL}" \
+  --strategy.auto_next_motion_tolerance="${AUTO_NEXT_MOTION_TOL}" \
+  --strategy.auto_next_motion_hold_s="${AUTO_NEXT_MOTION_HOLD_S}" \
+  --strategy.auto_next_settle_s="${AUTO_NEXT_SETTLE_S}" \
+  --strategy.auto_next_log_interval_s="${AUTO_NEXT_LOG_INTERVAL_S}" \
+  "${AUTO_NEXT_ARGS[@]}" \
   --policy.path="${POLICY_PATH}" \
   "${INFERENCE_ARGS[@]}" \
   --resume="${RESUME}" \

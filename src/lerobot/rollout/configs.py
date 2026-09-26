@@ -204,6 +204,42 @@ class EpisodicStrategyConfig(RolloutStrategyConfig):
     # interpolation only delays the start of the reset phase.
     smooth_handover: bool = True
 
+    # Whether policy observations/actions are persisted to the rollout dataset.
+    record_episodes: bool = True
+
+    # Automatically finish an episode after the robot has first moved away from
+    # its startup pose and then remained stable inside an optional end-pose region.
+    # Distances are L1 sums over the robot position features, in their normalized units.
+    auto_next_on_settle: bool = False
+    auto_next_min_episode_s: float = 5.0
+    auto_next_leave_tolerance: float = 55.0
+    auto_next_end_position: list[float] | None = None
+    auto_next_end_tolerance: float = 30.0
+    # L1 sum over joints between consecutive samples while waiting in the end region.
+    # Sync SmolVLA runs ~5 Hz, so tiny residual motion easily exceeds 1.0; prefer ~2–3.
+    auto_next_motion_tolerance: float = 2.5
+    # Wall-clock seconds of continuous low-motion hold inside the end region.
+    auto_next_motion_hold_s: float = 0.2
+    auto_next_settle_s: float = 0.2
+    # How often to print live auto-next diagnostics while an episode is running.
+    auto_next_log_interval_s: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.auto_next_min_episode_s < 0:
+            raise ValueError("auto_next_min_episode_s must be >= 0")
+        if self.auto_next_leave_tolerance <= 0:
+            raise ValueError("auto_next_leave_tolerance must be > 0")
+        if self.auto_next_end_tolerance < 0:
+            raise ValueError("auto_next_end_tolerance must be >= 0")
+        if self.auto_next_motion_tolerance < 0:
+            raise ValueError("auto_next_motion_tolerance must be >= 0")
+        if self.auto_next_motion_hold_s < 0:
+            raise ValueError("auto_next_motion_hold_s must be >= 0")
+        if self.auto_next_settle_s < 0:
+            raise ValueError("auto_next_settle_s must be >= 0")
+        if self.auto_next_log_interval_s < 0:
+            raise ValueError("auto_next_log_interval_s must be >= 0")
+
 
 @RolloutStrategyConfig.register_subclass("dagger")
 @dataclass

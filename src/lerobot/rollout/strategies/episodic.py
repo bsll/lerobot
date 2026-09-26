@@ -114,7 +114,10 @@ class EpisodicStrategy(RolloutStrategy):
         # the run summary averages across them without the untimed reset phases.
         timer = CycleTimer(fps, self._interpolator.multiplier)
 
-        with VideoEncodingManager(dataset):
+        encoding_manager = (
+            VideoEncodingManager(dataset) if self.config.record_episodes else contextlib.nullcontext()
+        )
+        with encoding_manager:
             try:
                 recorded_episodes = 0
                 while recorded_episodes < num_episodes and not events["stop_recording"]:
@@ -131,7 +134,9 @@ class EpisodicStrategy(RolloutStrategy):
                     self._engine.resume()
 
                     self._refresh_grasp_target(ctx)
-                    log_say(f"Recording episode {dataset.num_episodes}", play_sounds)
+                    episode_index = dataset.num_episodes if self.config.record_episodes else recorded_episodes
+                    verb = "Recording" if self.config.record_episodes else "Running"
+                    log_say(f"{verb} episode {episode_index}", play_sounds)
                     self._policy_loop(
                         ctx=ctx,
                         robot=robot,
@@ -195,7 +200,8 @@ class EpisodicStrategy(RolloutStrategy):
                         log_say("Re-record episode", play_sounds)
                         events["rerecord_episode"] = False
                         events["exit_early"] = False
-                        dataset.clear_episode_buffer()
+                        if self.config.record_episodes:
+                            dataset.clear_episode_buffer()
                         timer.log_episode_summary("discarded episode")
 
                         # returns to its initial joint positions captured at startup
@@ -204,17 +210,20 @@ class EpisodicStrategy(RolloutStrategy):
 
                         continue
 
-                    dataset.save_episode()
+                    if self.config.record_episodes:
+                        dataset.save_episode()
                     recorded_episodes += 1
-                    timer.log_episode_summary(f"episode {dataset.num_episodes}")
+                    timer.log_episode_summary(f"episode {recorded_episodes}")
             finally:
                 # Save any frames buffered in the current episode so an unexpected
                 # exception or KeyboardInterrupt does not silently drop recorded data.
                 # suppress: save_episode raises if the buffer is empty (nothing to lose).
-                logger.info("Episodic control loop ended — saving any in-progress episode")
+                logger.info("Episodic control loop ended")
                 timer.log_run_summary()
-                with contextlib.suppress(Exception):
-                    dataset.save_episode()
+                if self.config.record_episodes:
+                    logger.info("Saving any in-progress episode")
+                    with contextlib.suppress(Exception):
+                        dataset.save_episode()
 
     def _policy_loop(
         self,
@@ -236,6 +245,27 @@ class EpisodicStrategy(RolloutStrategy):
 
         timestamp = 0.0
         start_t = time.perf_counter()
+        auto_next_departed = False
+        auto_next_stable_since_t: float | None = None
+        auto_next_stable_position: dict[str, float] | None = None
+        auto_next_hold_s = self.config.auto_next_motion_hold_s
+        auto_next_was_in_end_region = False
+        auto_next_last_log_t = 0.0
+        auto_next_last_stable_log = -1.0
+        initial_position = ctx.hardware.initial_position
+
+        if self.config.auto_next_on_settle:
+            logger.info(
+                "Auto-next enabled: leave>=%.1f end_tol=%.1f motion<=%.1f hold=%.2fs "
+                "min_episode=%.1fs log_every=%.1fs end_pose=%s",
+                self.config.auto_next_leave_tolerance,
+                self.config.auto_next_end_tolerance,
+                self.config.auto_next_motion_tolerance,
+                auto_next_hold_s,
+                self.config.auto_next_min_episode_s,
+                self.config.auto_next_log_interval_s,
+                self.config.auto_next_end_position,
+            )
 
         while timestamp < control_time_s:
             timer.tick(new_cycle=interpolator.needs_new_action())
@@ -249,6 +279,152 @@ class EpisodicStrategy(RolloutStrategy):
 
             with timer.section("observe"):
                 obs = robot.get_observation()
+
+            if self.config.auto_next_on_settle and initial_position:
+                elapsed = time.perf_counter() - start_t
+                current_position = {key: float(obs[key]) for key in initial_position if key in obs}
+                end_position = self.config.auto_next_end_position
+                if end_position is not None and len(end_position) != len(current_position):
+                    raise ValueError(
+                        "auto_next_end_position must contain one value per robot position feature "
+                        f"({len(current_position)} expected, got {len(end_position)})"
+                    )
+                end_distance = (
+                    sum(
+                        abs(value - target)
+                        for value, target in zip(current_position.values(), end_position, strict=True)
+                    )
+                    if end_position is not None
+                    else 0.0
+                )
+                in_end_region = end_position is None or end_distance <= self.config.auto_next_end_tolerance
+                leave_distance = sum(
+                    abs(current_position[key] - float(value))
+                    for key, value in initial_position.items()
+                    if key in current_position
+                )
+                if not auto_next_departed and leave_distance >= self.config.auto_next_leave_tolerance:
+                    auto_next_departed = True
+                    auto_next_stable_since_t = None
+                    auto_next_stable_position = current_position
+                    logger.info(
+                        "Auto-next armed: robot left startup pose (leave=%.2f >= %.2f)",
+                        leave_distance,
+                        self.config.auto_next_leave_tolerance,
+                    )
+
+                motion = 0.0
+                stable_elapsed = 0.0
+                if auto_next_departed and auto_next_stable_position is not None:
+                    if in_end_region and not auto_next_was_in_end_region:
+                        logger.info(
+                            "Auto-next: robot entered end-pose region (end=%.2f <= %.2f); "
+                            "waiting for motion<=%.1f for %.2fs",
+                            end_distance,
+                            self.config.auto_next_end_tolerance,
+                            self.config.auto_next_motion_tolerance,
+                            auto_next_hold_s,
+                        )
+                    auto_next_was_in_end_region = in_end_region
+
+                    motion = sum(
+                        abs(current_position[key] - value)
+                        for key, value in auto_next_stable_position.items()
+                    )
+                    now_t = time.perf_counter()
+                    if not in_end_region or motion > self.config.auto_next_motion_tolerance:
+                        if auto_next_stable_since_t is not None:
+                            reason = (
+                                f"left end region (end={end_distance:.2f})"
+                                if not in_end_region
+                                else (
+                                    f"motion={motion:.2f} > "
+                                    f"{self.config.auto_next_motion_tolerance:.1f}"
+                                )
+                            )
+                            logger.info(
+                                "Auto-next stable RESET: %s (had %.2f/%.2fs) leave=%.2f end=%.2f",
+                                reason,
+                                now_t - auto_next_stable_since_t,
+                                auto_next_hold_s,
+                                leave_distance,
+                                end_distance,
+                            )
+                        auto_next_stable_since_t = None
+                        auto_next_last_stable_log = -1.0
+                        auto_next_stable_position = current_position
+                    else:
+                        if auto_next_stable_since_t is None:
+                            auto_next_stable_since_t = now_t
+                            logger.info(
+                                "Auto-next stable START: motion=%.2f <= %.1f; "
+                                "need %.2fs continuous (leave=%.2f end=%.2f)",
+                                motion,
+                                self.config.auto_next_motion_tolerance,
+                                auto_next_hold_s,
+                                leave_distance,
+                                end_distance,
+                            )
+                        stable_elapsed = now_t - auto_next_stable_since_t
+                        # Log progress every ~0.2s while accumulating in the end region.
+                        if stable_elapsed - auto_next_last_stable_log >= 0.2:
+                            auto_next_last_stable_log = stable_elapsed
+                            logger.info(
+                                "Auto-next stable: %.2f/%.2fs motion=%.2f leave=%.2f end=%.2f",
+                                stable_elapsed,
+                                auto_next_hold_s,
+                                motion,
+                                leave_distance,
+                                end_distance,
+                            )
+                        if (
+                            elapsed >= self.config.auto_next_min_episode_s
+                            and stable_elapsed >= auto_next_hold_s
+                        ):
+                            logger.info(
+                                "Auto-next TRIGGER: enter next episode "
+                                "(leave=%.2f end=%.2f motion=%.2f stable=%.2f/%.2fs elapsed=%.1fs)",
+                                leave_distance,
+                                end_distance,
+                                motion,
+                                stable_elapsed,
+                                auto_next_hold_s,
+                                elapsed,
+                            )
+                            precise_sleep(self.config.auto_next_settle_s)
+                            break
+
+                if (
+                    self.config.auto_next_log_interval_s > 0
+                    and time.perf_counter() - auto_next_last_log_t >= self.config.auto_next_log_interval_s
+                ):
+                    auto_next_last_log_t = time.perf_counter()
+                    logger.info(
+                        "Auto-next check: elapsed=%.1fs leave=%.2f/%s end=%.2f/%s motion=%.2f/%s "
+                        "stable=%.2f/%.2fs departed=%s in_end=%s ready=%s",
+                        elapsed,
+                        leave_distance,
+                        f">={self.config.auto_next_leave_tolerance:.1f}",
+                        end_distance,
+                        (
+                            f"<={self.config.auto_next_end_tolerance:.1f}"
+                            if end_position is not None
+                            else "n/a"
+                        ),
+                        motion,
+                        f"<={self.config.auto_next_motion_tolerance:.1f}",
+                        stable_elapsed,
+                        auto_next_hold_s,
+                        auto_next_departed,
+                        in_end_region,
+                        (
+                            auto_next_departed
+                            and in_end_region
+                            and elapsed >= self.config.auto_next_min_episode_s
+                            and stable_elapsed >= auto_next_hold_s
+                        ),
+                    )
+
             with timer.section("process_obs"):
                 obs_processed = self._process_observation_and_notify(ctx, obs)
 
@@ -263,7 +439,7 @@ class EpisodicStrategy(RolloutStrategy):
                 # Record once per interpolation cycle so the dataset cadence
                 # matches its declared fps; interpolated ticks only send
                 # commands to the robot.
-                if interpolator.emitted_policy_action:
+                if self.config.record_episodes and interpolator.emitted_policy_action:
                     with timer.section("record"):
                         obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
                         action_frame = build_dataset_frame(features, action_dict, prefix=ACTION)
@@ -333,12 +509,13 @@ class EpisodicStrategy(RolloutStrategy):
         if self._listener is not None:
             self._listener.stop()
 
-        if ctx.data.dataset is not None:
+        if self.config.record_episodes and ctx.data.dataset is not None:
             logger.info("Finalizing dataset...")
             ctx.data.dataset.finalize()
 
         if (
-            cfg.dataset is not None
+            self.config.record_episodes
+            and cfg.dataset is not None
             and cfg.dataset.push_to_hub
             and ctx.data.dataset is not None
             and safe_push_to_hub(
