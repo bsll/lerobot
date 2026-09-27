@@ -113,16 +113,61 @@ export POLICY_PATH=.../pretrained_model
 bash examples/piper/5c_rollout_grasp.sh
 ```
 
-需要 **→ / ← 方向键** 控制集数/重录时，用 episodic 版（会落盘到 `train_data/rollout_*`）。默认开 **RTC**（`--inference.type=rtc`），适合 SmolVLA 等慢 VLA：
+需要 **→ / ← 方向键** 控制集数/重录时，用 episodic 版（会落盘到 `train_data/rollout_*`）：
 
 ```bash
 # 先把机械臂摆到与采集时相同的起始位姿，再启动（不会自动 parking 到零点）
-export JOB_NAME=piper_grasp_demo_smolvla
+export JOB_NAME=piper_grasp_smolvla
 bash examples/piper/5d_rollout_grasp_episodic.sh
+```
 
-# 可选：调 RTC / 切回同步推理
-# export RTC_EXECUTION_HORIZON=10 RTC_MAX_GUIDANCE_WEIGHT=10.0 RTC_QUEUE_THRESHOLD=30
-# export INFERENCE_TYPE=sync
+连续多抓、靠「离开起点 → 在结束区稳定」自动切下一集，用 [`5e_rollout_grasp_auto.sh`](./5e_rollout_grasp_auto.sh)（内部仍调 `5d`）：
+
+```bash
+export JOB_NAME=piper_grasp_smolvla
+bash examples/piper/5e_rollout_grasp_auto.sh
+# RECORD=false bash examples/piper/5e_rollout_grasp_auto.sh
+```
+
+#### 推理后端：sync vs RTC
+
+| | `INFERENCE_TYPE=sync` | `INFERENCE_TYPE=rtc` |
+|---|---|---|
+| 行为 | 跑完当前 action chunk 再推理下一段 | 后台异步出 chunk，队列快空时提前再规划并 **整段替换** |
+| 适合 | 抓取时序要完整、先求稳 | 慢 VLA、想压低停顿；需把阈值调对 |
+
+```bash
+export INFERENCE_TYPE=sync   # 默认建议先用 sync 把抓取跑通
+# export INFERENCE_TYPE=rtc
+```
+
+RTC 相关环境变量（仅 `INFERENCE_TYPE=rtc` 时生效）：
+
+| 变量 | 默认 | 含义 |
+|---|---|---|
+| `RTC_QUEUE_THRESHOLD` | `15` | 动作队列剩余步数 **≤ 该值** 时启动下一轮推理。必须 **明显小于** `chunk_size`（SmolVLA 多为 50）。若设成 ≈50，几乎每步都换 chunk，接近/闭合中段会被盖掉，看起来像「起点直奔终点、不做抓取」 |
+| `RTC_EXECUTION_HORIZON` | `15` | RTC 与上一段 leftover 融合的 horizon |
+| `RTC_MAX_GUIDANCE_WEIGHT` | `10` | guided 模式下前缀引导强度 |
+
+推荐：`RTC_QUEUE_THRESHOLD=10~20`。过大优先改小阈值，不要先怪模型。
+
+#### Action chunk 丝滑（`LINEARIZE_ACTION_CHUNK`）
+
+对每个将要执行的 chunk 做 **时间维滑动平均**，并 **强制对齐首尾**；名字含 `gripper` 的维（单臂默认最后一维）**不平滑**，避免开合被抹平或与关节错位。
+
+- sync：在 `select_action` 入队前平滑  
+- RTC：在 `queue.merge` 之后，只平滑 **processed**（机器人实际执行）队列；`original` leftover 不动，供下一轮 RTC conditioning  
+
+| 变量 | `5d` 默认 | `5e` 默认 | 含义 |
+|---|---|---|---|
+| `LINEARIZE_ACTION_CHUNK` | `false` | `true` | 是否开启 |
+| `LINEARIZE_ACTION_CHUNK_WINDOW` | `5` | `5` | 滑动窗口；越大越顺、锐利动作越糊 |
+
+```bash
+# 5e 已默认开启；RTC + 丝滑示例：
+INFERENCE_TYPE=rtc RTC_QUEUE_THRESHOLD=15 \
+  LINEARIZE_ACTION_CHUNK=true LINEARIZE_ACTION_CHUNK_WINDOW=5 \
+  bash examples/piper/5e_rollout_grasp_auto.sh
 ```
 
 按 **→** 结束一集后，从臂会插值回到**脚本启动时**记录的关节位姿（`initial_position`），用于下一集复位。若启动前未手动摆位、或仍用默认 `calibrate_on_connect=true`，则“初始位姿”会是 SDK 的 parking 零点 `(0,-100,100,0,35,0)`，看起来就像回到零点。
@@ -166,6 +211,7 @@ bash examples/piper/3_record.sh
 - 策略推理：[`5_rollout.sh`](./5_rollout.sh)（`lerobot-rollout --strategy.type=base`）
 - 带抓取目标 state 的推理：[`5c_rollout_grasp.sh`](./5c_rollout_grasp.sh)
 - 带 grasp + 方向键 episodic 推理/录 eval：[`5d_rollout_grasp_episodic.sh`](./5d_rollout_grasp_episodic.sh)
+- 自动切集（结束区稳定）+ 默认开 chunk 丝滑：[`5e_rollout_grasp_auto.sh`](./5e_rollout_grasp_auto.sh)
 - 开环回放数据集：[`5b_replay.sh`](./5b_replay.sh)
 
 ```bash
@@ -195,5 +241,6 @@ bash examples/piper/5_rollout.sh
 | `3c_record_singleport_grasp.sh` | 直录 + YOLO 抓取目标写入 state |
 | `5_rollout.sh` | 真机策略推理 |
 | `5c_rollout_grasp.sh` | 推理时同步注入 grasp state |
-| `5d_rollout_grasp_episodic.sh` | episodic 推理 + grasp + 方向键 |
+| `5d_rollout_grasp_episodic.sh` | episodic 推理 + grasp + 方向键；RTC / chunk 丝滑见上文 |
+| `5e_rollout_grasp_auto.sh` | 自动下一集 + 默认 `LINEARIZE_ACTION_CHUNK=true` |
 | `5b_replay.sh` | 数据集开环回放 |

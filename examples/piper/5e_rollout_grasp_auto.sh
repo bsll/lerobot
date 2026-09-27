@@ -23,8 +23,8 @@
 #   AUTO_NEXT_MOTION_HOLD_S=0.2  # wall-clock seconds of continuous low motion
 #   AUTO_NEXT_MOTION_TOL=3 AUTO_NEXT_MOTION_HOLD_S=0.1 bash examples/piper/5e_rollout_grasp_auto.sh
 # Smooth each predicted action chunk (moving average, endpoints locked; gripper untouched):
-#   LINEARIZE_ACTION_CHUNK=true  (default here); set false to keep raw chunk actions.
-#   LINEARIZE_ACTION_CHUNK_WINDOW=5  # larger = smoother, more lag on sharp moves
+#   LINEARIZE_ACTION_CHUNK=true  (default here); WINDOW=5
+# RTC (via 5d): keep RTC_QUEUE_THRESHOLD << chunk_size (default 15). See examples/piper/README.md.
 # The default end pose below comes from successful rollout episodes. Recalculate
 # it if the task layout, calibration, or desired final arm pose changes.
 
@@ -33,8 +33,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 export DATASET_NAME="${DATASET_NAME:-rollout_piper_grasp_auto_nosave}"
-export NUM_EPISODES="${NUM_EPISODES:-30}"
-export EPISODE_TIME_S="${EPISODE_TIME_S:-20}"
+export NUM_EPISODES="${NUM_EPISODES:-60}"
+export EPISODE_TIME_S="${EPISODE_TIME_S:-30}"
 export RESET_TIME_S="${RESET_TIME_S:-0}"
 export RESET_TO_INITIAL="${RESET_TO_INITIAL:-true}"
 export RECORD="${RECORD:-true}"

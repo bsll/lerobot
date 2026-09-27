@@ -56,21 +56,22 @@ AUTO_NEXT_MOTION_TOL="${AUTO_NEXT_MOTION_TOL:-2.5}"
 AUTO_NEXT_MOTION_HOLD_S="${AUTO_NEXT_MOTION_HOLD_S:-0.2}"
 AUTO_NEXT_SETTLE_S="${AUTO_NEXT_SETTLE_S:-0.2}"
 AUTO_NEXT_LOG_INTERVAL_S="${AUTO_NEXT_LOG_INTERVAL_S:-1}"
-# Replace each sync action chunk with a straight line from first to last step.
+# Endpoint-locked moving-average on each action chunk (joints only; gripper untouched).
 LINEARIZE_ACTION_CHUNK="${LINEARIZE_ACTION_CHUNK:-false}"
 LINEARIZE_ACTION_CHUNK_WINDOW="${LINEARIZE_ACTION_CHUNK_WINDOW:-5}"
 
-# Synchronous inference by default; RTC remains available as an explicit override.
+# sync = finish each chunk before the next inference; rtc = async replace (tune threshold).
 INFERENCE_TYPE="${INFERENCE_TYPE:-rtc}"
 RTC_EXECUTION_HORIZON="${RTC_EXECUTION_HORIZON:-15}"
 RTC_MAX_GUIDANCE_WEIGHT="${RTC_MAX_GUIDANCE_WEIGHT:-10.0}"
-RTC_QUEUE_THRESHOLD="${RTC_QUEUE_THRESHOLD:-50}"
+# Refill when remaining actions <= this. Keep << chunk_size (often 50) or mid-grasp gets replaced.
+RTC_QUEUE_THRESHOLD="${RTC_QUEUE_THRESHOLD:-15}"
 
 MODEL_PATH="${MODEL_PATH:-${REPO_ROOT}/best.pt}"
 DETECT_CAMERA="${DETECT_CAMERA:-front}"
 DETECT_CONF="${DETECT_CONF:-0.5}"
 DETECT_DEVICE="${DETECT_DEVICE:-auto}"
-DETECT_NUM_FRAMES="${DETECT_NUM_FRAMES:-15}"
+DETECT_NUM_FRAMES="${DETECT_NUM_FRAMES:-10}"
 DETECT_MIN_CX_RATIO="${DETECT_MIN_CX_RATIO:-0.47}"
 DETECT_MAX_CX_RATIO="${DETECT_MAX_CX_RATIO:-0.83}"
 DETECT_MIN_CY_RATIO="${DETECT_MIN_CY_RATIO:-0.12}"
