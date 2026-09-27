@@ -73,7 +73,9 @@ from ..common.vla_utils import (
 from ..pretrained import PreTrainedPolicy
 from ..rtc.modeling_rtc import RTCProcessor
 from ..utils import (
+    linearize_action_chunk,
     populate_queues,
+    resolve_gripper_action_dims,
 )
 from .configuration_smolvla import SmolVLAConfig
 from .smolvlm_with_expert import SmolVLMWithExpertModel
@@ -264,7 +266,15 @@ class SmolVLAPolicy(PreTrainedPolicy):
 
             # `self.predict_action_chunk` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
             # effectively has shape (n_action_steps, batch_size, *), hence the transpose.
-            self._queues[ACTION].extend(actions.transpose(0, 1)[: self.config.n_action_steps])
+            chunk = actions[:, : self.config.n_action_steps]
+            if self.config.linearize_action_chunk:
+                preserve_dims = resolve_gripper_action_dims(chunk.shape[-1])
+                chunk = linearize_action_chunk(
+                    chunk,
+                    preserve_dims=preserve_dims,
+                    window=self.config.linearize_action_chunk_window,
+                )
+            self._queues[ACTION].extend(chunk.transpose(0, 1))
 
         return self._queues[ACTION].popleft()
 

@@ -19,7 +19,8 @@ from collections import deque
 
 import numpy as np
 import torch
-from torch import nn
+import torch.nn.functional as F
+from torch import Tensor, nn
 
 from lerobot.configs import FeatureType, PolicyFeature, PreTrainedConfig
 from lerobot.lerobot_types import PolicyAction, RobotAction, RobotObservation
@@ -96,6 +97,75 @@ def log_model_loading_keys(missing_keys: list[str], unexpected_keys: list[str]) 
         logging.warning(f"Missing key(s) when loading model: {missing_keys}")
     if unexpected_keys:
         logging.warning(f"Unexpected key(s) when loading model: {unexpected_keys}")
+
+
+def resolve_gripper_action_dims(
+    action_dim: int, names: list[str] | tuple[str, ...] | None = None
+) -> tuple[int, ...]:
+    """Indices of gripper channels in an action vector.
+
+    Prefers names containing ``"gripper"`` (case-insensitive). When no name
+    matches, falls back to the last dimension — the usual single-arm layout.
+    """
+    if action_dim <= 0:
+        return ()
+    if names:
+        dims = tuple(i for i, name in enumerate(names) if i < action_dim and "gripper" in str(name).lower())
+        if dims:
+            return dims
+    return (action_dim - 1,)
+
+
+def linearize_action_chunk(
+    actions: Tensor,
+    preserve_dims: tuple[int, ...] | list[int] | None = None,
+    window: int = 5,
+) -> Tensor:
+    """Temporally smooth an action chunk while keeping its endpoints fixed.
+
+    Applies a causal-friendly moving average along time, then subtracts a
+    linear correction so ``out[:, 0]`` and ``out[:, -1]`` match the original
+    chunk exactly. This reduces mid-chunk jitter without collapsing the path
+    into a start→end chord (which would pull the arm away while the gripper
+    is still closing).
+
+    Args:
+        actions: Action chunk of shape ``(B, T, D)``.
+        preserve_dims: Channel indices to leave unchanged (e.g. gripper).
+        window: Odd-preferred moving-average width along time. ``<= 1`` skips
+            smoothing (still reapplies ``preserve_dims`` if given).
+
+    Returns:
+        Same-shaped smoothed tensor. ``T <= 2`` returns the input unchanged
+        (aside from ``preserve_dims`` copies, which are already identical).
+    """
+    if actions.ndim != 3:
+        raise ValueError(f"Expected actions with shape (B, T, D), got {tuple(actions.shape)}")
+    horizon = actions.shape[1]
+    if horizon <= 2 or window <= 1:
+        return actions
+
+    # Ensure an odd kernel so replicate-pad + avg_pool keeps length T.
+    kernel = int(window) | 1
+    pad = kernel // 2
+    # (B, D, T) for avg_pool1d
+    xt = actions.transpose(1, 2)
+    xt = F.pad(xt, (pad, pad), mode="replicate")
+    smoothed = F.avg_pool1d(xt, kernel_size=kernel, stride=1).transpose(1, 2)
+
+    # Re-anchor so the first/last steps match the raw chunk exactly.
+    delta0 = smoothed[:, :1] - actions[:, :1]
+    delta1 = smoothed[:, -1:] - actions[:, -1:]
+    alphas = torch.linspace(0, 1, horizon, device=actions.device, dtype=actions.dtype).view(1, horizon, 1)
+    out = smoothed - (delta0 + alphas * (delta1 - delta0))
+
+    if preserve_dims:
+        action_dim = actions.shape[-1]
+        for dim in preserve_dims:
+            if dim < 0 or dim >= action_dim:
+                raise ValueError(f"preserve_dims entry {dim} out of range for action_dim={action_dim}")
+            out[:, :, dim] = actions[:, :, dim]
+    return out
 
 
 # TODO(Steven): Move this function to a proper preprocessor step

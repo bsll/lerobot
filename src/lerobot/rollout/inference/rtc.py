@@ -35,7 +35,7 @@ import torch
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.rtc import ActionQueue, LatencyTracker, reanchor_relative_rtc_prefix
 from lerobot.policies.rtc.configuration_rtc import RTCConfig
-from lerobot.policies.utils import prepare_observation_for_inference
+from lerobot.policies.utils import prepare_observation_for_inference, resolve_gripper_action_dims
 from lerobot.processor import (
     NormalizerProcessorStep,
     PolicyProcessorPipeline,
@@ -250,6 +250,11 @@ class RTCInferenceEngine(InferenceEngine):
                         k for k in robot_wrapper.action_features if k.endswith(".pos")
                     ]
             logger.info("Relative actions enabled: RTC prefix will be re-anchored")
+
+        action_keys = [k for k in robot_wrapper.action_features if k.endswith(".pos")]
+        if not action_keys:
+            action_keys = list(robot_wrapper.action_features)
+        self._linearize_preserve_dims = resolve_gripper_action_dims(len(action_keys), action_keys)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -559,6 +564,19 @@ class RTCInferenceEngine(InferenceEngine):
                             epoch_unchanged = epoch_before == self._reset_epoch
                             if epoch_unchanged:
                                 queue.merge(original, processed, new_delay, idx_before, task=task)
+                                # Smooth only the robot-bound (processed) remainder; keep
+                                # original leftovers for the next RTC conditioning prefix.
+                                if getattr(self._policy.config, "linearize_action_chunk", False):
+                                    queue.linearize_remaining_processed(
+                                        preserve_dims=self._linearize_preserve_dims,
+                                        window=int(
+                                            getattr(
+                                                self._policy.config,
+                                                "linearize_action_chunk_window",
+                                                5,
+                                            )
+                                        ),
+                                    )
                         if not epoch_unchanged:
                             logger.info("Discarding action chunk computed before an engine reset")
 

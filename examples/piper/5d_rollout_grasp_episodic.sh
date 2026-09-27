@@ -39,7 +39,7 @@ DATASET_ROOT="${DATASET_ROOT:-${REPO_ROOT}/train_data/${DATASET_NAME}}"
 RESUME="${RESUME:-false}"
 
 TASK="${TASK:-Pick up a crab stick from the red tray and put it into the plate.}"
-NUM_EPISODES="${NUM_EPISODES:-30}"
+NUM_EPISODES="${NUM_EPISODES:-60}"
 EPISODE_TIME_S="${EPISODE_TIME_S:-60}"
 RESET_TIME_S="${RESET_TIME_S:-1}"
 DEVICE="${DEVICE:-cuda}"
@@ -56,9 +56,12 @@ AUTO_NEXT_MOTION_TOL="${AUTO_NEXT_MOTION_TOL:-2.5}"
 AUTO_NEXT_MOTION_HOLD_S="${AUTO_NEXT_MOTION_HOLD_S:-0.2}"
 AUTO_NEXT_SETTLE_S="${AUTO_NEXT_SETTLE_S:-0.2}"
 AUTO_NEXT_LOG_INTERVAL_S="${AUTO_NEXT_LOG_INTERVAL_S:-1}"
+# Replace each sync action chunk with a straight line from first to last step.
+LINEARIZE_ACTION_CHUNK="${LINEARIZE_ACTION_CHUNK:-false}"
+LINEARIZE_ACTION_CHUNK_WINDOW="${LINEARIZE_ACTION_CHUNK_WINDOW:-5}"
 
 # Synchronous inference by default; RTC remains available as an explicit override.
-INFERENCE_TYPE="${INFERENCE_TYPE:-sync}"
+INFERENCE_TYPE="${INFERENCE_TYPE:-rtc}"
 RTC_EXECUTION_HORIZON="${RTC_EXECUTION_HORIZON:-15}"
 RTC_MAX_GUIDANCE_WEIGHT="${RTC_MAX_GUIDANCE_WEIGHT:-10.0}"
 RTC_QUEUE_THRESHOLD="${RTC_QUEUE_THRESHOLD:-50}"
@@ -118,6 +121,7 @@ echo "  task           : ${TASK}"
 echo "  CAN            : ${CAN_PORT}"
 echo "  inference      : ${INFERENCE_TYPE}"
 echo "  save trajectory: ${RECORD}"
+echo "  linearize chunk: ${LINEARIZE_ACTION_CHUNK} (window=${LINEARIZE_ACTION_CHUNK_WINDOW})"
 echo "  auto next      : ${AUTO_NEXT_GRASP} (leave>=${AUTO_NEXT_LEAVE_TOL}, motion<=${AUTO_NEXT_MOTION_TOL} for ${AUTO_NEXT_MOTION_HOLD_S}s)"
 if [[ -n "${AUTO_NEXT_END_POSITION}" ]]; then
   echo "  end pose       : ${AUTO_NEXT_END_POSITION} (L1 tolerance=${AUTO_NEXT_END_TOL})"
@@ -144,6 +148,8 @@ lerobot-rollout \
   --strategy.auto_next_log_interval_s="${AUTO_NEXT_LOG_INTERVAL_S}" \
   "${AUTO_NEXT_ARGS[@]}" \
   --policy.path="${POLICY_PATH}" \
+  --policy.linearize_action_chunk="${LINEARIZE_ACTION_CHUNK}" \
+  --policy.linearize_action_chunk_window="${LINEARIZE_ACTION_CHUNK_WINDOW}" \
   "${INFERENCE_ARGS[@]}" \
   --resume="${RESUME}" \
   --robot.type=piper_follower \

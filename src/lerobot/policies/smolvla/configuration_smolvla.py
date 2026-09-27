@@ -28,6 +28,12 @@ class SmolVLAConfig(PreTrainedConfig):
     n_obs_steps: int = 1
     chunk_size: int = 50
     n_action_steps: int = 50
+    # When True, temporally smooth each sync/RTC-executed action chunk with a
+    # moving average while locking the first/last steps (and leaving gripper
+    # dims untouched). Reduces mid-chunk jitter without start→end chords.
+    linearize_action_chunk: bool = False
+    # Moving-average width along time used when linearize_action_chunk is True.
+    linearize_action_chunk_window: int = 5
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -118,6 +124,10 @@ class SmolVLAConfig(PreTrainedConfig):
         if self.use_delta_joint_actions_aloha:
             raise NotImplementedError(
                 "`use_delta_joint_actions_aloha` is used by smolvla for aloha real models. It is not ported yet in LeRobot."
+            )
+        if self.linearize_action_chunk_window < 1:
+            raise ValueError(
+                f"linearize_action_chunk_window must be >= 1, got {self.linearize_action_chunk_window}."
             )
 
     def validate_features(self) -> None:

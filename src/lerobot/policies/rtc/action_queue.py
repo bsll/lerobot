@@ -28,6 +28,7 @@ import torch
 from torch import Tensor
 
 from .configuration_rtc import RTCConfig
+from ..utils import linearize_action_chunk, resolve_gripper_action_dims
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,36 @@ class ActionQueue:
                 return
 
             self._append_actions_queue(original_actions, processed_actions, task)
+
+    def linearize_remaining_processed(
+        self,
+        preserve_dims: tuple[int, ...] | list[int] | None = None,
+        window: int = 5,
+    ) -> None:
+        """Smooth remaining robot actions while locking endpoints.
+
+        Leaves ``original_queue`` untouched so RTC can still condition the next
+        chunk on the policy's raw leftover trajectory. Channels in
+        ``preserve_dims`` (typically gripper) keep their original series.
+        No-ops when fewer than three unconsumed processed actions remain.
+        """
+        with self.lock:
+            if self.queue is None or self.last_index >= len(self.queue):
+                return
+            remaining = self.queue[self.last_index :]
+            if remaining.shape[0] <= 2:
+                return
+            if preserve_dims is None:
+                preserve_dims = resolve_gripper_action_dims(remaining.shape[-1])
+            smoothed = linearize_action_chunk(
+                remaining.unsqueeze(0),
+                preserve_dims=preserve_dims,
+                window=window,
+            ).squeeze(0)
+            if self.last_index == 0:
+                self.queue = smoothed
+            else:
+                self.queue = torch.cat([self.queue[: self.last_index], smoothed], dim=0)
 
     def _replace_actions_queue(
         self,

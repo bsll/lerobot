@@ -854,3 +854,31 @@ def test_typical_non_rtc_workflow(action_queue_rtc_disabled, sample_actions):
 
     # Should have 10 remaining + 50 new = 60
     assert action_queue_rtc_disabled.qsize() == 60
+
+
+def test_linearize_remaining_processed_keeps_original(rtc_config_enabled):
+    """Post-merge smoothing locks endpoints and leaves gripper + RTC leftovers alone."""
+    queue = ActionQueue(rtc_config_enabled)
+    original = torch.arange(6, dtype=torch.float32).unsqueeze(-1).expand(6, 2).contiguous()
+    processed = torch.tensor(
+        [[0.0, 0.0], [9.0, 9.0], [0.0, 8.0], [3.0, 1.0], [1.0, 1.0], [4.0, 8.0]],
+        dtype=torch.float32,
+    )
+    queue.merge(original, processed, real_delay=1)
+    leftover_before = queue.get_left_over().clone()
+    remaining_before = queue.get_processed_left_over().clone()
+    gripper_before = remaining_before[:, -1].clone()
+
+    queue.linearize_remaining_processed(preserve_dims=(1,), window=3)
+
+    remaining = queue.get_processed_left_over()
+    assert remaining is not None
+    # Endpoints locked to the raw remaining segment.
+    assert torch.allclose(remaining[0], remaining_before[0])
+    assert torch.allclose(remaining[-1], remaining_before[-1])
+    # Gripper series unchanged; mid joint values should move (not a pure chord).
+    assert torch.equal(remaining[:, -1], gripper_before)
+    assert not torch.allclose(remaining[1:-1, 0], remaining_before[1:-1, 0])
+    chord_mid = 0.5 * (remaining_before[0, 0] + remaining_before[-1, 0])
+    assert not torch.allclose(remaining[remaining.shape[0] // 2, 0], chord_mid, atol=1e-3)
+    assert torch.equal(queue.get_left_over(), leftover_before)
