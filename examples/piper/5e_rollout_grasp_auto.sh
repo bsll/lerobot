@@ -19,8 +19,10 @@
 #   RECORD=false bash examples/piper/5e_rollout_grasp_auto.sh
 #
 # Tune completion detection (end-region settle):
+#   Must: leave start → leave end region → re-enter end → hold still.
 #   AUTO_NEXT_MOTION_TOL=2.5   # higher = tolerate more jitter, fewer stable RESETs
 #   AUTO_NEXT_MOTION_HOLD_S=0.2  # wall-clock seconds of continuous low motion
+#   If startup pose is near AUTO_NEXT_END_POSITION, lower END_TOL or raise LEAVE_TOL.
 #   AUTO_NEXT_MOTION_TOL=3 AUTO_NEXT_MOTION_HOLD_S=0.1 bash examples/piper/5e_rollout_grasp_auto.sh
 # Smooth each predicted action chunk (moving average, endpoints locked; gripper untouched):
 #   LINEARIZE_ACTION_CHUNK=true  (default here); WINDOW=5
@@ -34,7 +36,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 export DATASET_NAME="${DATASET_NAME:-rollout_piper_grasp_auto_nosave}"
 export NUM_EPISODES="${NUM_EPISODES:-60}"
-export EPISODE_TIME_S="${EPISODE_TIME_S:-30}"
+export EPISODE_TIME_S="${EPISODE_TIME_S:-20}"
 export RESET_TIME_S="${RESET_TIME_S:-0}"
 export RESET_TO_INITIAL="${RESET_TO_INITIAL:-true}"
 export RECORD="${RECORD:-true}"

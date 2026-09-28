@@ -246,6 +246,7 @@ class EpisodicStrategy(RolloutStrategy):
         timestamp = 0.0
         start_t = time.perf_counter()
         auto_next_departed = False
+        auto_next_left_end_after_depart = False
         auto_next_stable_since_t: float | None = None
         auto_next_stable_position: dict[str, float] | None = None
         auto_next_hold_s = self.config.auto_next_motion_hold_s
@@ -255,17 +256,33 @@ class EpisodicStrategy(RolloutStrategy):
         initial_position = ctx.hardware.initial_position
 
         if self.config.auto_next_on_settle:
+            start_to_end = None
+            if initial_position and self.config.auto_next_end_position is not None:
+                start_vals = [float(v) for v in initial_position.values()]
+                end_vals = list(self.config.auto_next_end_position)
+                if len(start_vals) == len(end_vals):
+                    start_to_end = sum(abs(a - b) for a, b in zip(start_vals, end_vals, strict=True))
             logger.info(
                 "Auto-next enabled: leave>=%.1f end_tol=%.1f motion<=%.1f hold=%.2fs "
-                "min_episode=%.1fs log_every=%.1fs end_pose=%s",
+                "min_episode=%.1fs log_every=%.1fs start_to_end_L1=%s end_pose=%s",
                 self.config.auto_next_leave_tolerance,
                 self.config.auto_next_end_tolerance,
                 self.config.auto_next_motion_tolerance,
                 auto_next_hold_s,
                 self.config.auto_next_min_episode_s,
                 self.config.auto_next_log_interval_s,
+                f"{start_to_end:.1f}" if start_to_end is not None else "n/a",
                 self.config.auto_next_end_position,
             )
+            if start_to_end is not None and start_to_end <= self.config.auto_next_end_tolerance:
+                logger.warning(
+                    "Auto-next: startup pose is inside the end region "
+                    "(start_to_end_L1=%.1f <= end_tol=%.1f). Settle is gated on leaving the "
+                    "end region after arming, then re-entering; consider raising leave tol, "
+                    "lowering end tol, or recalibrating AUTO_NEXT_END_POSITION.",
+                    start_to_end,
+                    self.config.auto_next_end_tolerance,
+                )
 
         while timestamp < control_time_s:
             timer.tick(new_cycle=interpolator.needs_new_action())
@@ -305,43 +322,62 @@ class EpisodicStrategy(RolloutStrategy):
                 )
                 if not auto_next_departed and leave_distance >= self.config.auto_next_leave_tolerance:
                     auto_next_departed = True
+                    auto_next_left_end_after_depart = not in_end_region
                     auto_next_stable_since_t = None
                     auto_next_stable_position = current_position
                     logger.info(
-                        "Auto-next armed: robot left startup pose (leave=%.2f >= %.2f)",
+                        "Auto-next armed: robot left startup pose (leave=%.2f >= %.2f, in_end=%s)",
                         leave_distance,
                         self.config.auto_next_leave_tolerance,
+                        in_end_region,
                     )
 
                 motion = 0.0
                 stable_elapsed = 0.0
                 if auto_next_departed and auto_next_stable_position is not None:
-                    if in_end_region and not auto_next_was_in_end_region:
+                    if not in_end_region:
+                        if not auto_next_left_end_after_depart:
+                            logger.info(
+                                "Auto-next: left end-pose region after arming (end=%.2f > %.2f); "
+                                "will wait for re-entry before settle",
+                                end_distance,
+                                self.config.auto_next_end_tolerance,
+                            )
+                        auto_next_left_end_after_depart = True
+
+                    # Only count settle after: leave start → leave end zone → re-enter end.
+                    # Prevents false TRIGGER when startup pose sits inside the end region.
+                    can_settle = auto_next_left_end_after_depart and in_end_region
+
+                    if can_settle and not auto_next_was_in_end_region:
                         logger.info(
-                            "Auto-next: robot entered end-pose region (end=%.2f <= %.2f); "
+                            "Auto-next: re-entered end-pose region (end=%.2f <= %.2f); "
                             "waiting for motion<=%.1f for %.2fs",
                             end_distance,
                             self.config.auto_next_end_tolerance,
                             self.config.auto_next_motion_tolerance,
                             auto_next_hold_s,
                         )
-                    auto_next_was_in_end_region = in_end_region
+                    auto_next_was_in_end_region = can_settle
 
                     motion = sum(
                         abs(current_position[key] - value)
                         for key, value in auto_next_stable_position.items()
                     )
                     now_t = time.perf_counter()
-                    if not in_end_region or motion > self.config.auto_next_motion_tolerance:
+                    if not can_settle or motion > self.config.auto_next_motion_tolerance:
                         if auto_next_stable_since_t is not None:
-                            reason = (
-                                f"left end region (end={end_distance:.2f})"
-                                if not in_end_region
-                                else (
+                            if not can_settle:
+                                reason = (
+                                    "waiting to leave end after arming"
+                                    if not auto_next_left_end_after_depart
+                                    else f"left end region (end={end_distance:.2f})"
+                                )
+                            else:
+                                reason = (
                                     f"motion={motion:.2f} > "
                                     f"{self.config.auto_next_motion_tolerance:.1f}"
                                 )
-                            )
                             logger.info(
                                 "Auto-next stable RESET: %s (had %.2f/%.2fs) leave=%.2f end=%.2f",
                                 reason,
@@ -401,7 +437,7 @@ class EpisodicStrategy(RolloutStrategy):
                     auto_next_last_log_t = time.perf_counter()
                     logger.info(
                         "Auto-next check: elapsed=%.1fs leave=%.2f/%s end=%.2f/%s motion=%.2f/%s "
-                        "stable=%.2f/%.2fs departed=%s in_end=%s ready=%s",
+                        "stable=%.2f/%.2fs departed=%s left_end=%s in_end=%s ready=%s",
                         elapsed,
                         leave_distance,
                         f">={self.config.auto_next_leave_tolerance:.1f}",
@@ -416,9 +452,11 @@ class EpisodicStrategy(RolloutStrategy):
                         stable_elapsed,
                         auto_next_hold_s,
                         auto_next_departed,
+                        auto_next_left_end_after_depart,
                         in_end_region,
                         (
                             auto_next_departed
+                            and auto_next_left_end_after_depart
                             and in_end_region
                             and elapsed >= self.config.auto_next_min_episode_s
                             and stable_elapsed >= auto_next_hold_s

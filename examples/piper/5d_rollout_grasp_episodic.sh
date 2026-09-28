@@ -57,7 +57,7 @@ AUTO_NEXT_MOTION_HOLD_S="${AUTO_NEXT_MOTION_HOLD_S:-0.2}"
 AUTO_NEXT_SETTLE_S="${AUTO_NEXT_SETTLE_S:-0.2}"
 AUTO_NEXT_LOG_INTERVAL_S="${AUTO_NEXT_LOG_INTERVAL_S:-1}"
 # Endpoint-locked moving-average on each action chunk (joints only; gripper untouched).
-LINEARIZE_ACTION_CHUNK="${LINEARIZE_ACTION_CHUNK:-false}"
+LINEARIZE_ACTION_CHUNK="${LINEARIZE_ACTION_CHUNK:-true}"
 LINEARIZE_ACTION_CHUNK_WINDOW="${LINEARIZE_ACTION_CHUNK_WINDOW:-5}"
 
 # sync = finish each chunk before the next inference; rtc = async replace (tune threshold).
