@@ -417,9 +417,58 @@ class SmolVLAPolicy(PreTrainedPolicy):
         return actions
 
     def prepare_state(self, batch):
-        """Pad state"""
+        """Pad state, optionally augmenting YOLO grasp_target dims while training."""
         state = batch[OBS_STATE][:, -1, :] if batch[OBS_STATE].ndim > 2 else batch[OBS_STATE]
+        state = self._maybe_augment_grasp_target(state)
         state = pad_vector(state, self.config.max_state_dim)
+        return state
+
+    def _resolve_grasp_target_indices(self, state_dim: int) -> tuple[int, ...]:
+        """Indices of grasp_target channels in the unpadded state vector."""
+        if self.config.grasp_target_state_indices:
+            indices = tuple(self.config.grasp_target_state_indices)
+            if any(i >= state_dim for i in indices):
+                raise ValueError(
+                    f"grasp_target_state_indices {indices} out of range for state_dim={state_dim}."
+                )
+            return indices
+        n_guide = len(self.config.grasp_target_state_names)
+        if n_guide <= 0 or state_dim < n_guide:
+            return ()
+        # Piper / 3c layout appends grasp_target after joint positions.
+        return tuple(range(state_dim - n_guide, state_dim))
+
+    def _maybe_augment_grasp_target(self, state: Tensor) -> Tensor:
+        """Per-sample grasp_target mix: keep | zero | Gaussian noise (train only).
+
+        Draws one U(0,1) per batch item and applies mutually exclusive branches:
+        ``[0, dropout)`` → zero, ``[dropout, dropout+noise)`` → add N(0, σ²), else keep.
+        """
+        dropout = self.config.grasp_target_dropout
+        noise_p = self.config.grasp_target_noise
+        if not self.training or (dropout <= 0 and noise_p <= 0):
+            return state
+        indices = self._resolve_grasp_target_indices(state.shape[-1])
+        if not indices:
+            return state
+
+        u = torch.rand(state.shape[0], device=state.device, dtype=state.dtype)
+        drop_mask = u < dropout
+        noise_mask = (u >= dropout) & (u < dropout + noise_p)
+        if not drop_mask.any() and not noise_mask.any():
+            return state
+
+        state = state.clone()
+        idx = torch.tensor(indices, device=state.device, dtype=torch.long)
+        guide = state[:, idx]
+        if drop_mask.any():
+            guide = torch.where(drop_mask.unsqueeze(-1), torch.zeros_like(guide), guide)
+        if noise_mask.any():
+            sigma = self.config.grasp_target_noise_std
+            if sigma > 0:
+                noise = torch.randn_like(guide) * sigma
+                guide = torch.where(noise_mask.unsqueeze(-1), guide + noise, guide)
+        state[:, idx] = guide
         return state
 
     def prepare_action(self, batch):

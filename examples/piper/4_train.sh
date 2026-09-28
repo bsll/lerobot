@@ -31,6 +31,16 @@ if [[ "${POLICY_TYPE}" == "pi05" || "${POLICY_TYPE}" == "pi0" ]]; then
   )
 fi
 
+# SmolVLA: train-time grasp_target mix — keep | dropout | Gaussian noise.
+# Default 80% keep / 10% zero / 10% noise (σ=0.05 on normalized dims).
+if [[ "${POLICY_TYPE}" == "smolvla" ]]; then
+  EXTRA_ARGS+=(
+    --policy.grasp_target_dropout="${GRASP_TARGET_DROPOUT:-0.1}"
+    --policy.grasp_target_noise="${GRASP_TARGET_NOISE:-0.1}"
+    --policy.grasp_target_noise_std="${GRASP_TARGET_NOISE_STD:-0.05}"
+  )
+fi
+
 lerobot-train \
   --dataset.repo_id="${DATASET_NAME}" \
   --dataset.root="${DATASET_ROOT}" \

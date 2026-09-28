@@ -75,6 +75,25 @@ class SmolVLAConfig(PreTrainedConfig):
     freeze_vision_encoder: bool = True
     train_expert_only: bool = True
     train_state_proj: bool = True
+    # Train-time grasp_target augmentation (mutually exclusive per sample):
+    # keep as-is | zero (dropout) | add Gaussian noise. Remaining mass is keep.
+    # Default mix: 80% keep / 10% dropout / 10% noise.
+    grasp_target_dropout: float = 0.1
+    grasp_target_noise: float = 0.1
+    # Std of N(0, σ²) noise on normalized grasp_target dims (cx, cy, w, h, angle).
+    grasp_target_noise_std: float = 0.05
+    # Indices into the unpadded observation.state vector. Empty = use the last
+    # ``len(grasp_target_state_names)`` dims when state is long enough (Piper layout).
+    grasp_target_state_indices: list[int] = field(default_factory=list)
+    grasp_target_state_names: list[str] = field(
+        default_factory=lambda: [
+            "grasp_target.cx",
+            "grasp_target.cy",
+            "grasp_target.w",
+            "grasp_target.h",
+            "grasp_target.angle",
+        ]
+    )
 
     # Training presets
     optimizer_lr: float = 1e-4
@@ -128,6 +147,23 @@ class SmolVLAConfig(PreTrainedConfig):
         if self.linearize_action_chunk_window < 1:
             raise ValueError(
                 f"linearize_action_chunk_window must be >= 1, got {self.linearize_action_chunk_window}."
+            )
+        if not 0.0 <= self.grasp_target_dropout <= 1.0:
+            raise ValueError(f"grasp_target_dropout must be in [0, 1], got {self.grasp_target_dropout}.")
+        if not 0.0 <= self.grasp_target_noise <= 1.0:
+            raise ValueError(f"grasp_target_noise must be in [0, 1], got {self.grasp_target_noise}.")
+        if self.grasp_target_dropout + self.grasp_target_noise > 1.0:
+            raise ValueError(
+                "grasp_target_dropout + grasp_target_noise must be <= 1.0, got "
+                f"{self.grasp_target_dropout} + {self.grasp_target_noise}."
+            )
+        if self.grasp_target_noise_std < 0.0:
+            raise ValueError(
+                f"grasp_target_noise_std must be >= 0, got {self.grasp_target_noise_std}."
+            )
+        if any(i < 0 for i in self.grasp_target_state_indices):
+            raise ValueError(
+                f"grasp_target_state_indices must be non-negative, got {self.grasp_target_state_indices}."
             )
 
     def validate_features(self) -> None:
